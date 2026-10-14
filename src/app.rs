@@ -12,6 +12,7 @@ use crate::domain::{
 use crate::credentials;
 use crate::desktop;
 use crate::routing;
+use crate::sessions;
 use crate::settings;
 use crate::statusline;
 use crate::storage;
@@ -53,6 +54,7 @@ impl App {
             Commands::StatuslineUninstall => settings::uninstall_statusline(&self.ctx),
             Commands::Purge { yes } => self.purge(yes),
             Commands::Statusline => statusline::handle(&self.ctx),
+            Commands::Sessions { command } => sessions::run(&self.ctx, command),
         }
     }
 

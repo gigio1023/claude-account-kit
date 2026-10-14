@@ -8,6 +8,7 @@ use crate::app::App;
 use crate::domain::{AccountKind, RoutingMode};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -74,6 +75,62 @@ pub(crate) enum Commands {
     },
     /// Internal command used by Claude Code statusLine.
     Statusline,
+    /// Show every local Claude Code session in every Claude Desktop account.
+    Sessions {
+        #[command(subcommand)]
+        command: SessionsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SessionsCommand {
+    /// Add missing Desktop entries, refresh stale copies, remove orphaned ones.
+    Sync {
+        /// Report what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the run summary as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Internal: the launch agent's run. Skips work when nothing changed
+        /// and prints nothing; the exit code reports failure.
+        #[arg(long, hide = true, conflicts_with_all = ["dry_run", "json"])]
+        background: bool,
+        /// Claude Desktop's data directory, for runs against a copy.
+        #[arg(long, hide = true)]
+        desktop_root: Option<PathBuf>,
+        /// Claude Code's transcript directory, for runs against a copy.
+        #[arg(long, hide = true)]
+        projects_root: Option<PathBuf>,
+    },
+    /// Show the background job and the last sync.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Turn the macOS background sync on or off.
+    Background {
+        #[command(subcommand)]
+        action: BackgroundAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BackgroundAction {
+    /// Install a launch agent that syncs at login, on an interval, and when an account appears.
+    On {
+        /// Seconds between runs.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
+        interval: u32,
+    },
+    /// Stop and remove the launch agent; entries already added stay.
+    Off,
+    /// Print the launch agent plist without installing it.
+    #[command(hide = true)]
+    Plist {
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
+        interval: u32,
+    },
 }
 
 /// Parse CLI input and execute the selected command.

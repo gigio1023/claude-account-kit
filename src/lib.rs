@@ -14,6 +14,7 @@ mod credentials;
 mod desktop;
 mod notification;
 mod routing;
+mod sessions;
 mod settings;
 mod shell;
 mod statusline;
