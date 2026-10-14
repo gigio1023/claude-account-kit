@@ -75,6 +75,11 @@ impl AppContext {
         self.claude_dir.join("settings.json")
     }
 
+    /// Where `sessions` keeps its ledger, last run summary, fingerprint, and lock.
+    pub(crate) fn sessions_dir(&self) -> PathBuf {
+        self.app_dir.join("sessions")
+    }
+
     /// Where saved account credentials live when the platform has no Keychain.
     pub(crate) fn accounts_dir(&self) -> PathBuf {
         self.app_dir.join("accounts")
