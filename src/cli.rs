@@ -64,7 +64,7 @@ pub(crate) enum Commands {
     StatuslineInstall,
     /// Remove the Claude Code statusLine wrapper and restore the prior command.
     StatuslineUninstall,
-    /// Delete every saved account credential and the router's own directory.
+    /// Delete every saved account credential, stop the sessions launch agent, and remove this tool's own directory.
     ///
     /// Separate from `statusline-uninstall` because the two undo different
     /// things: one a setting in Claude Code, the other this tool's own copies.

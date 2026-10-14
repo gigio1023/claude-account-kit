@@ -80,6 +80,27 @@ pub(crate) fn summary(ctx: &AppContext) -> Result<SessionsSummary> {
     })
 }
 
+/// Unload this tool's launch agent, for `purge`.
+///
+/// Returns whether one was unloaded. Without it, the agent would recreate the
+/// state directory `purge` just removed on its next run.
+///
+/// # Errors
+///
+/// Fails when the agent cannot be unloaded or its plist cannot be removed.
+pub(crate) fn stop_background(ctx: &AppContext) -> Result<bool> {
+    let paths = SessionPaths::resolve(ctx, None, None)?;
+    let before = background::status(&paths)?;
+    if !before.supported || !(before.installed || before.loaded) {
+        return Ok(false);
+    }
+    let after = background::turn_off(&paths)?;
+    if after.installed || after.loaded {
+        bail!("the sessions launch agent is still present; run `sessions background off`");
+    }
+    Ok(true)
+}
+
 /// Run one `sessions` subcommand.
 pub(crate) fn run(ctx: &AppContext, command: SessionsCommand) -> Result<()> {
     match command {

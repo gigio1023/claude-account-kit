@@ -66,6 +66,10 @@ if [ -x "$binary" ]; then
     "$binary" statusline-uninstall
     if [ "$PURGE" -eq 1 ]; then
         "$binary" purge --yes
+    elif [ "$(uname -s)" = Darwin ]; then
+        # The launch agent runs this binary, so it goes with it. The sessions
+        # state stays with the saved accounts for a reinstall.
+        "$binary" sessions background off
     fi
 else
     echo "no binary at $binary; skipped the statusLine step"

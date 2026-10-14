@@ -114,6 +114,17 @@ Run `setup` once per account, each time while Claude Code is signed in to that a
 
 Add `--yes` to `switch` and `toggle` to skip the prompt. Restart Claude Code after a switch: a running session keeps using the credential it started with.
 
+## Share sessions across Desktop accounts
+
+Claude Desktop shows only the current account's local Code sessions. On macOS, this keeps every local session in every account's list:
+
+```bash
+claude-account-kit sessions sync --dry-run   # see what would change
+claude-account-kit sessions background on    # keep it in step from now on
+```
+
+The sync adds list entries that point at the same transcripts and changes no file it did not write itself. New entries appear after the next account switch in Desktop. [docs/desktop-sessions.md](docs/desktop-sessions.md) covers what is shared, what is left alone, and the limits.
+
 ## What the statusline shows
 
 claude-account-kit prints its own part first and your old command's output after it, separated by `|`.
@@ -153,7 +164,7 @@ This restores your old statusline command, deletes the saved credentials and thi
 | `./uninstall.sh --purge` | Everything: the wrapper, the saved accounts, the binary, and the `PATH` line |
 | `./uninstall.sh` | The same, but keeps the saved accounts for later |
 | `claude-account-kit statusline-uninstall` | The wrapper, putting your previous command back |
-| `claude-account-kit purge` | The saved credentials and the state directory |
+| `claude-account-kit purge` | The saved credentials, the sessions background job, and the state directory |
 
 A purge asks before it deletes; `--yes` answers for it. None of these touch the account Claude Code is signed in to, so removing the tool logs you out of nothing.
 
@@ -174,6 +185,7 @@ A purge asks before it deletes; `--yes` answers for it. None of these touch the 
 |---|---|
 | [docs/routing.md](docs/routing.md) | How the order and the cached readings pick an account, and what the statusline prints |
 | [docs/platforms.md](docs/platforms.md) | Credential stores, notifications, and file locations per platform |
+| [docs/desktop-sessions.md](docs/desktop-sessions.md) | How sessions are shared across Desktop accounts, what is never changed, and the background job |
 | [docs/install.md](docs/install.md) | Install options, a build by hand, the statusline wrapper, and removal |
 | [docs/development.md](docs/development.md) | Module layout, checks, and adding a platform backend |
 

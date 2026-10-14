@@ -25,11 +25,12 @@ The cross target runs type check the platform branches the host cannot execute; 
 | `context` | Every path the tool reads or writes, and the move of the pre-rename configuration directory |
 | `claude` | What `claude auth status`, the credential record, and Claude Code's cached profile say about the signed-in account |
 | `desktop` | The account Claude Desktop last signed in with, read from its config |
+| `sessions` | Desktop session sharing: discovery, the pure plan, writes guarded by the ledger, and the launch agent. [desktop-sessions.md](desktop-sessions.md) describes the behavior |
 | `shell` | Running the inner statusline command and quoting a path into the setting |
 | `notification` | Desktop notifications and their per event markers |
 | `util` | The confirmation prompt and the statusline's short number formats |
 
-Platform branches live in `credentials`, `shell`, `notification`, and `context`, and nowhere else. `app` and `cli` hold command wiring only.
+Platform branches live in `credentials`, `shell`, `notification`, `context`, and inside `sessions` in `platform.rs` and `background.rs`, and nowhere else. `app` and `cli` hold command wiring only.
 
 ## The README figure
 

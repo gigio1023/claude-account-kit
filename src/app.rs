@@ -253,6 +253,7 @@ impl App {
         );
         print_config(&config, &state);
         println!("accounts: {}", state.accounts.len());
+        println!("desktop sessions: {}", describe_sessions(&self.ctx));
 
         if cache.accounts.is_empty() {
             println!("quota: none");
@@ -291,6 +292,11 @@ impl App {
             } else {
                 println!("no stored credential found for {name}");
             }
+        }
+        if sessions::stop_background(&self.ctx)
+            .context("failed to stop the sessions launch agent")?
+        {
+            println!("stopped the sessions launch agent");
         }
         if self.ctx.app_dir.exists() {
             fs::remove_dir_all(&self.ctx.app_dir)
@@ -362,6 +368,31 @@ fn describe_active(ctx: &crate::context::AppContext) -> &'static str {
         Ok(_) => "no, Claude Code is signed out; run `claude auth login`",
         Err(_) => "unknown, the active credential could not be read",
     }
+}
+
+/// One line on Desktop session sharing for `status`.
+///
+/// A failure here is reported in the line rather than failing `status`,
+/// whose other lines are about the terminal login and still worth showing.
+fn describe_sessions(ctx: &crate::context::AppContext) -> String {
+    let summary = match sessions::summary(ctx) {
+        Ok(summary) => summary,
+        Err(error) => return format!("unknown, {error:#}"),
+    };
+    let background = match summary.background {
+        None => "background unavailable",
+        Some(true) => "background on",
+        Some(false) => "background off",
+    };
+    let last = summary
+        .last_run_at
+        .map_or_else(|| "never synced".to_string(), |at| format!("last sync {at}"));
+    let hint = if summary.refresh_needed {
+        "; switch Desktop accounts or restart it to see new entries"
+    } else {
+        ""
+    };
+    format!("{background}, {last}{hint}; details: `sessions status`")
 }
 
 fn describe_quota(snapshot: &RateLimitSnapshot, now: i64) -> String {
