@@ -18,7 +18,7 @@ use crate::shell;
 use std::fs;
 use std::io;
 
-const APP_TITLE: &str = "claude-quota-router";
+const APP_TITLE: &str = "claude-account-kit";
 
 /// How long quota readings are ignored after a switch.
 ///
@@ -187,7 +187,7 @@ fn render_segments(
         segments.push("route failed".to_string());
     }
     if actionable {
-        segments.push("-> claude-quota-router list".to_string());
+        segments.push("-> claude-account-kit list".to_string());
     }
     segments.join(" ")
 }

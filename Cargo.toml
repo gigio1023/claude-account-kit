@@ -1,11 +1,11 @@
 [package]
-name = "claude-quota-router"
+name = "claude-account-kit"
 version = "0.1.0"
 edition = "2024"
 # let chains, which the routing and statusline code uses, are stable from 1.88.
 rust-version = "1.88"
-description = "Quota-aware Claude Code account router"
-repository = "https://github.com/gigio1023/claude-quota-router"
+description = "Tools for using several Claude accounts on one machine"
+repository = "https://github.com/gigio1023/claude-account-kit"
 license = "MIT"
 
 [dependencies]

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 588" width="720" height="588" role="img" aria-labelledby="title desc">
   <title id="title">What the router does on every statusline render</title>
-  <desc id="desc">Claude Code runs claude-quota-router as its statusLine.command and hands it rate_limits on stdin. The router files that reading under the current account in rate-limits.json, picks the first account the order in config.json still allows, and puts that account's saved login into Claude Code's credential, leaving MCP and plugin tokens in place. Claude Code picks up the new login at the next session.</desc>
+  <desc id="desc">Claude Code runs claude-account-kit as its statusLine.command and hands it rate_limits on stdin. It files that reading under the current account in rate-limits.json, picks the first account the order in config.json still allows, and puts that account's saved login into Claude Code's credential, leaving MCP and plugin tokens in place. Claude Code picks up the new login at the next session.</desc>
   <defs>
     <marker id="arrow-ink" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse" overflow="visible">
       <path d="M1 1 L7 4 L1 7" fill="none" stroke="#0D0D0D" stroke-width="1.2"/>

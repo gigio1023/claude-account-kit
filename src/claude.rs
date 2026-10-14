@@ -3,22 +3,28 @@
 //! `claude auth status` is the CLI's own view of the account that the active
 //! credential belongs to, so it is the source for both the account's email and
 //! its plan. The credential JSON is a fallback for tests and offline setup flows
-//! where the command is unavailable.
+//! where the command is unavailable. The account uuid, which the command does
+//! not report, comes from the profile Claude Code caches in its global config.
 
+use crate::context;
 use crate::domain::AccountKind;
+use serde::Deserialize;
 use serde_json::{Map, Value};
+use std::fs;
 use std::process::Command;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AuthStatus {
     pub(crate) email: Option<String>,
     pub(crate) kind: Option<AccountKind>,
+    /// The organization uuid, reported as `orgId`.
+    pub(crate) org_id: Option<String>,
 }
 
 /// Ask Claude Code who is logged in.
 ///
-/// One invocation answers both questions `setup` asks, which keeps the command
-/// from being spawned twice for a single save.
+/// One invocation answers everything `setup` asks of it, which keeps the
+/// command from being spawned more than once for a single save.
 pub(crate) fn auth_status() -> Option<AuthStatus> {
     let output = Command::new("claude")
         .args(["auth", "status"])
@@ -42,7 +48,47 @@ fn parse_status(payload: &[u8]) -> Option<AuthStatus> {
             .get("subscriptionType")
             .and_then(Value::as_str)
             .map(AccountKind::from_subscription),
+        org_id: value
+            .get("orgId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .filter(|org| !org.is_empty()),
     })
+}
+
+/// The slice of Claude Code's global config that names the signed-in account.
+///
+/// That file also holds project history, MCP server settings, and other data
+/// that must not be logged, so these are the only fields deserialized from it.
+#[derive(Deserialize)]
+struct GlobalConfig {
+    #[serde(rename = "oauthAccount")]
+    oauth_account: Option<OauthAccount>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OauthAccount {
+    account_uuid: Option<String>,
+    email_address: Option<String>,
+}
+
+/// The account uuid in Claude Code's cached profile, if that profile is `email`'s.
+///
+/// The profile lags a switch until Claude Code refetches it, so right after one
+/// it still describes the account that was left. Its uuid is used only when its
+/// email is the one `claude auth status` reports for the login being saved.
+pub(crate) fn profile_account_uuid(email: &str) -> Option<String> {
+    let text = fs::read(context::claude_global_config_path().ok()?).ok()?;
+    let config: GlobalConfig = serde_json::from_slice(&text).ok()?;
+    let account = config.oauth_account?;
+    let same_email = account
+        .email_address
+        .is_some_and(|address| address.eq_ignore_ascii_case(email));
+    if !same_email {
+        return None;
+    }
+    account.account_uuid.filter(|uuid| !uuid.is_empty())
 }
 
 /// Whether a credential actually carries an OAuth token.

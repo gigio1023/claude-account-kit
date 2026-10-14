@@ -70,6 +70,7 @@ pub(crate) fn switch_to(
     if options.emit {
         println!("switched to account: {name}");
         println!("restart Claude Code if the running session does not pick up the new credential");
+        println!("Claude Desktop keeps its own login; switch it in the Desktop app");
     }
     Ok(())
 }

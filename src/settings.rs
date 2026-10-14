@@ -117,8 +117,16 @@ fn statusline_command() -> Result<String> {
     Ok(format!("{} statusline", shell::quote(&exe)))
 }
 
+/// Binary names whose `statusline` command is this tool's wrapper.
+///
+/// The second is the name before the rename. A wrapper installed under it must
+/// still be recognized, or `statusline-install` would save it as the user's own
+/// command and the wrapper would end up running itself, and
+/// `statusline-uninstall` would leave it in place.
+const OUR_BINARY_NAMES: [&str; 2] = ["claude-account-kit", "claude-quota-router"];
+
 fn is_our_statusline_command(command: &str) -> bool {
-    command.contains("claude-quota-router") && command.contains("statusline")
+    command.contains("statusline") && OUR_BINARY_NAMES.iter().any(|name| command.contains(name))
 }
 
 fn load_settings(path: &Path) -> Result<Value> {

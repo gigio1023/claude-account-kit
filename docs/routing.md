@@ -5,7 +5,7 @@
 `config --priority` stores the order the router prefers, most preferred first.
 
 ```bash
-claude-quota-router config --priority me@work.com,me@gmail.com
+claude-account-kit config --priority me@work.com,me@gmail.com
 ```
 
 Accounts left out of the list fall in behind it by plan kind, in the order personal, team, enterprise, other, and alphabetically within a kind. Pass `--priority ''` to clear the list and fall back to plan kind alone. `list` and `status` both print the resulting order, so there is no need to work it out from the rules.
@@ -40,7 +40,7 @@ An account has recovered when a window that was at 100% carries a `resets_at` th
 In `manual` mode, the default, the statusline reports these states and waits. In `auto` mode the router performs the switch itself and asks you to restart Claude Code.
 
 ```bash
-claude-quota-router config --mode auto
+claude-account-kit config --mode auto
 ```
 
 ## Two rules against stale readings
@@ -57,8 +57,8 @@ The current account name is always first, followed by whatever is worth acting o
 me@gmail.com
 me@gmail.com 97%(5h)
 me@gmail.com 97%(5h) me@work.com reset in 2h10m(5h)
-me@gmail.com me@work.com reset done -> claude-quota-router list
-me@gmail.com LIMIT(5h) -> claude-quota-router list
+me@gmail.com me@work.com reset done -> claude-account-kit list
+me@gmail.com LIMIT(5h) -> claude-account-kit list
 ```
 
 Usage appears once it reaches `--alert-at`, which defaults to 95. The window in parentheses is the one closest to its limit: `5h`, `7d`, or `spend` for the spend window that gateway-billed accounts report.

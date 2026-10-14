@@ -10,6 +10,7 @@ use crate::domain::{
     AccountEntry, AccountKind, AccountName, Config, RateLimitSnapshot, RoutingMode, State,
 };
 use crate::credentials;
+use crate::desktop;
 use crate::routing;
 use crate::settings;
 use crate::statusline;
@@ -32,6 +33,9 @@ impl App {
     }
 
     pub(crate) fn handle(&self, command: Commands) -> Result<()> {
+        if !matches!(command, Commands::Statusline) {
+            self.ctx.report_migration();
+        }
         match command {
             Commands::Setup { name, kind } => self.setup(name, kind),
             Commands::Switch { name, yes } => self.switch(&name, yes),
@@ -113,6 +117,11 @@ impl App {
                 kind,
                 created_at,
                 updated_at: now,
+                account_uuid: status
+                    .as_ref()
+                    .and_then(|status| status.email.as_deref())
+                    .and_then(claude::profile_account_uuid),
+                org_uuid: status.as_ref().and_then(|status| status.org_id.clone()),
             },
         );
         storage::save_state(&self.ctx, &state)?;
@@ -234,6 +243,12 @@ impl App {
         );
         println!("credential store: {}", credentials::describe(&self.ctx));
         println!("signed in: {}", describe_active(&self.ctx));
+        if let Some(login) = desktop::describe_login(&state) {
+            println!("desktop: {login}");
+        }
+        println!(
+            "note: switch changes the terminal login only; Claude Desktop signs in on its own"
+        );
         print_config(&config, &state);
         println!("accounts: {}", state.accounts.len());
 
@@ -280,7 +295,7 @@ impl App {
                 .with_context(|| format!("failed to remove {}", self.ctx.app_dir.display()))?;
             println!("removed {}", self.ctx.app_dir.display());
         }
-        println!("the Claude Code login is unchanged; only the router's copies are gone");
+        println!("the Claude Code login is unchanged; only this tool's copies are gone");
         Ok(())
     }
 

@@ -114,6 +114,8 @@ mod tests {
                     kind: *kind,
                     created_at: 1,
                     updated_at: 1,
+                    account_uuid: None,
+                    org_uuid: None,
                 },
             );
         }

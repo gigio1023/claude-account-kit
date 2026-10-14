@@ -22,7 +22,9 @@ The cross target runs type check the platform branches the host cannot execute; 
 | `switcher` | The switch transaction, including the backup of the outgoing credential |
 | `credentials` | The credential store, one backend per platform |
 | `storage` | JSON persistence for everything that is not a secret |
-| `context` | Every path the tool reads or writes |
+| `context` | Every path the tool reads or writes, and the move of the pre-rename configuration directory |
+| `claude` | What `claude auth status`, the credential record, and Claude Code's cached profile say about the signed-in account |
+| `desktop` | The account Claude Desktop last signed in with, read from its config |
 | `shell` | Running the inner statusline command and quoting a path into the setting |
 | `notification` | Desktop notifications and their per event markers |
 | `util` | The confirmation prompt and the statusline's short number formats |

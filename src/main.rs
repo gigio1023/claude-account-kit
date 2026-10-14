@@ -1,3 +1,3 @@
 fn main() -> anyhow::Result<()> {
-    claude_quota_router::cli::run()
+    claude_account_kit::cli::run()
 }
