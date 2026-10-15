@@ -1,4 +1,4 @@
-//! Claude Quota Router library crate.
+//! Claude Account Kit library crate.
 //!
 //! The binary is intentionally thin. Most behavior lives in this library so
 //! command routing, state transitions, Keychain access, and statusline rendering
@@ -11,8 +11,10 @@ mod claude;
 mod context;
 mod domain;
 mod credentials;
+mod desktop;
 mod notification;
 mod routing;
+mod sessions;
 mod settings;
 mod shell;
 mod statusline;

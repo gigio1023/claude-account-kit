@@ -12,7 +12,7 @@ On Windows the statusline text is the only channel for a quota event, because no
 
 ## Credential stores
 
-On macOS both stores are Keychain services: `Claude Code-credentials` holds the credential Claude Code is using, and `claude-quota-router` holds the saved accounts. Every read and write goes through `/usr/bin/security`, because a Keychain item's access list is keyed on the calling binary: Apple's own tool keeps one grant across rebuilds of this one, and calling the Security framework in process would raise an authorization dialog while the statusline is rendering.
+On macOS both stores are Keychain services: `Claude Code-credentials` holds the credential Claude Code is using, and `claude-quota-router` holds the saved accounts. The second is the tool's name before the rename to claude-account-kit. It stays, because a new name would mean rewriting every saved credential. Every read and write goes through `/usr/bin/security`, because a Keychain item's access list is keyed on the calling binary: Apple's own tool keeps one grant across rebuilds of this one, and calling the Security framework in process would raise an authorization dialog while the statusline is rendering.
 
 Two consequences of that route are worth knowing. A credential travels in the argv of the `security` child process, where any process running as your user can read it for as long as the call lasts; that is not new access, since the same processes can read the items outright with the same command. And `security` has stored a silently truncated value while still exiting 0, so every write is read back and compared, and a write that does not match is undone before the error is reported.
 
@@ -22,7 +22,9 @@ The file backend is compiled and unit tested on every platform, including macOS,
 
 ## Locations
 
-The configuration directory is `%APPDATA%\claude-quota-router` on Windows, `$XDG_CONFIG_HOME/claude-quota-router` on Linux when that variable is set, and `~/.config/claude-quota-router` otherwise. `CLAUDE_QUOTA_ROUTER_HOME` overrides it.
+The configuration directory is `%APPDATA%\claude-account-kit` on Windows, `$XDG_CONFIG_HOME/claude-account-kit` on Linux when that variable is set, and `~/.config/claude-account-kit` otherwise. `CLAUDE_ACCOUNT_KIT_HOME` overrides it, and so does `CLAUDE_QUOTA_ROUTER_HOME`, its name before the rename, when the new variable is unset.
+
+When the default directory does not exist but `claude-quota-router` does in the same place, the first run renames it. A rename within one parent is atomic, so a statusline render running at the same moment sees the old directory or the new one and never half of each. If both exist, the new one is used and the old one is left alone; the two are never merged. Commands other than `statusline` print a line when they move it.
 
 | Data | Location |
 |---|---|
@@ -31,6 +33,8 @@ The configuration directory is `%APPDATA%\claude-quota-router` on Windows, `$XDG
 | Quota cache, one reading per account | `rate-limits.json` in the configuration directory |
 | Your previous statusline command | `inner-statusline.txt` in the configuration directory |
 | Claude Code settings the wrapper edits | `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json` |
+| Claude Code's cached profile, read by `setup` for the account id | `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` |
+| The account Claude Desktop last used, read by `status` | `~/Library/Application Support/Claude/config.json`, macOS only |
 
 ## What a switch does not change
 

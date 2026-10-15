@@ -11,6 +11,10 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 const ACTIVE_SERVICE: &str = "Claude Code-credentials";
+/// The service saved accounts are filed under. It is the tool's name from
+/// before the rename to claude-account-kit, kept as a persisted format: every
+/// saved login on a machine lives under it, and a new name would mean
+/// rewriting each of those credentials, where one failed write loses a login.
 const ACCOUNT_SERVICE: &str = "claude-quota-router";
 
 pub(crate) fn describe(_ctx: &AppContext) -> String {

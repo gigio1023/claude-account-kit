@@ -1,15 +1,18 @@
 #!/bin/sh
-# Take claude-quota-router back off this machine.
+# Take claude-account-kit back off this machine.
 #
 # The mirror of install.sh: it undoes the two things that script did, the binary
 # in BIN_DIR and the PATH line in the login shell's profile. Everything else the
 # tool created is behind --purge, because that deletes saved credentials.
 set -eu
 
-BIN_DIR="${CLAUDE_QUOTA_ROUTER_BIN_DIR:-$HOME/.local/bin}"
+# CLAUDE_QUOTA_ROUTER_BIN_DIR is the variable's name from before the rename.
+BIN_DIR="${CLAUDE_ACCOUNT_KIT_BIN_DIR:-${CLAUDE_QUOTA_ROUTER_BIN_DIR:-$HOME/.local/bin}}"
 UPDATE_PROFILE=1
 PURGE=0
-MARKER="# added by claude-quota-router install.sh"
+MARKER="# added by claude-account-kit install.sh"
+# What install.sh wrote before the rename. A profile edited then still carries it.
+LEGACY_MARKER="# added by claude-quota-router install.sh"
 
 usage() {
     cat <<'USAGE'
@@ -53,7 +56,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-binary="$BIN_DIR/claude-quota-router"
+binary="$BIN_DIR/claude-account-kit"
+# install.sh replaces a pre-rename binary with this link to the new one.
+legacy="$BIN_DIR/claude-quota-router"
 
 # Restore the statusline through the binary while it is still there. Its own
 # uninstall is what knows which command it replaced.
@@ -61,6 +66,10 @@ if [ -x "$binary" ]; then
     "$binary" statusline-uninstall
     if [ "$PURGE" -eq 1 ]; then
         "$binary" purge --yes
+    elif [ "$(uname -s)" = Darwin ]; then
+        # The launch agent runs this binary, so it goes with it. The sessions
+        # state stays with the saved accounts for a reinstall.
+        "$binary" sessions background off
     fi
 else
     echo "no binary at $binary; skipped the statusLine step"
@@ -72,6 +81,17 @@ fi
 if [ -e "$binary" ]; then
     rm -f "$binary"
     echo "removed $binary"
+fi
+
+# Only the link install.sh made is removed. A regular file under the old name is
+# a pre-rename install this script did not create.
+if [ -L "$legacy" ]; then
+    case "$(readlink "$legacy")" in
+        claude-account-kit|"$binary")
+            rm -f "$legacy"
+            echo "removed $legacy"
+            ;;
+    esac
 fi
 
 if [ "$UPDATE_PROFILE" -eq 0 ]; then
@@ -87,12 +107,12 @@ for profile in \
     "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
 do
     [ -f "$profile" ] || continue
-    grep -qF -- "$MARKER" "$profile" || continue
+    grep -qF -e "$MARKER" -e "$LEGACY_MARKER" -- "$profile" || continue
 
-    tmp="$profile.cqr-tmp.$$"
-    awk -v marker="$MARKER" '
-        $0 == marker { skip = 1; next }
-        skip > 0     { skip--; next }
+    tmp="$profile.cak-tmp.$$"
+    awk -v marker="$MARKER" -v legacy="$LEGACY_MARKER" '
+        $0 == marker || $0 == legacy { skip = 1; next }
+        skip > 0                     { skip--; next }
         { print }
     ' "$profile" > "$tmp"
     cat "$tmp" > "$profile"

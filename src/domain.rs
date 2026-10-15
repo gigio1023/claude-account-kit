@@ -159,6 +159,15 @@ pub(crate) struct AccountEntry {
     pub(crate) kind: AccountKind,
     pub(crate) created_at: i64,
     pub(crate) updated_at: i64,
+    /// The account's uuid, which is how Claude Desktop names the account it is
+    /// signed in to. Recorded by `setup` only when Claude Code's cached profile
+    /// is confirmed to belong to this login, and absent for accounts saved
+    /// before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) account_uuid: Option<String>,
+    /// The organization uuid `claude auth status` reported at `setup`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) org_uuid: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

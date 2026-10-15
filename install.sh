@@ -1,13 +1,14 @@
 #!/bin/sh
-# Build claude-quota-router, put it on PATH, and keep it there across shells.
+# Build claude-account-kit, put it on PATH, and keep it there across shells.
 #
 # The binary has to be on PATH before any of its own commands can run, so this
 # bootstrap step lives in a script rather than in a subcommand.
 set -eu
 
-BIN_DIR="${CLAUDE_QUOTA_ROUTER_BIN_DIR:-$HOME/.local/bin}"
+# CLAUDE_QUOTA_ROUTER_BIN_DIR is the variable's name from before the rename.
+BIN_DIR="${CLAUDE_ACCOUNT_KIT_BIN_DIR:-${CLAUDE_QUOTA_ROUTER_BIN_DIR:-$HOME/.local/bin}}"
 UPDATE_PROFILE=1
-MARKER="# added by claude-quota-router install.sh"
+MARKER="# added by claude-account-kit install.sh"
 
 usage() {
     cat <<'USAGE'
@@ -18,7 +19,7 @@ Options:
   --no-path       Install the binary without touching any shell profile.
   -h, --help      Show this message.
 
-The install directory can also be set with CLAUDE_QUOTA_ROUTER_BIN_DIR.
+The install directory can also be set with CLAUDE_ACCOUNT_KIT_BIN_DIR.
 USAGE
 }
 
@@ -61,8 +62,21 @@ fi
 
 cargo build --release --manifest-path "$repo_root/Cargo.toml"
 mkdir -p "$BIN_DIR"
-install -m 755 "$repo_root/target/release/claude-quota-router" "$BIN_DIR/claude-quota-router"
-echo "installed $BIN_DIR/claude-quota-router"
+install -m 755 "$repo_root/target/release/claude-account-kit" "$BIN_DIR/claude-account-kit"
+echo "installed $BIN_DIR/claude-account-kit"
+
+# Before the rename the binary was claude-quota-router, and Claude Code's
+# statusLine setting still names that path. Replacing the old binary with a link
+# to the new one keeps that statusline rendering, now against the migrated
+# state. The link is made beside it and renamed over it, so the path never goes
+# missing while a statusline render might be starting it.
+legacy="$BIN_DIR/claude-quota-router"
+if [ -f "$legacy" ] && [ ! -L "$legacy" ]; then
+    ln -s claude-account-kit "$legacy.tmp.$$"
+    mv -f "$legacy.tmp.$$" "$legacy"
+    echo "replaced $legacy with a link to claude-account-kit"
+    echo "run claude-account-kit statusline-install to point Claude Code's statusLine at the new name"
+fi
 
 if [ "$UPDATE_PROFILE" -eq 0 ]; then
     exit 0

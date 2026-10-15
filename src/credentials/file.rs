@@ -151,6 +151,7 @@ mod tests {
         let ctx = AppContext {
             app_dir: root.join("app"),
             claude_dir: root.join("claude"),
+            migration: None,
         };
         (ctx, root)
     }

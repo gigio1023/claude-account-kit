@@ -1,11 +1,11 @@
 [package]
-name = "claude-quota-router"
+name = "claude-account-kit"
 version = "0.1.0"
 edition = "2024"
 # let chains, which the routing and statusline code uses, are stable from 1.88.
 rust-version = "1.88"
-description = "Quota-aware Claude Code account router"
-repository = "https://github.com/gigio1023/claude-quota-router"
+description = "Tools for using several Claude accounts on one machine"
+repository = "https://github.com/gigio1023/claude-account-kit"
 license = "MIT"
 
 [dependencies]
@@ -14,6 +14,9 @@ clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 # preserve_order keeps the user's settings.json key order intact on install.
 serde_json = { version = "1.0", features = ["preserve_order"] }
+# Session sharing proves which Desktop files it wrote by their SHA-256, the
+# hash the earlier Python tool recorded, so its ledger can be imported as is.
+sha2 = "0.10"
 
 [lints.rust]
 unsafe_code = "forbid"

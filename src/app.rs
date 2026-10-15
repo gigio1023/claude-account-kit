@@ -10,7 +10,9 @@ use crate::domain::{
     AccountEntry, AccountKind, AccountName, Config, RateLimitSnapshot, RoutingMode, State,
 };
 use crate::credentials;
+use crate::desktop;
 use crate::routing;
+use crate::sessions;
 use crate::settings;
 use crate::statusline;
 use crate::storage;
@@ -32,6 +34,9 @@ impl App {
     }
 
     pub(crate) fn handle(&self, command: Commands) -> Result<()> {
+        if !matches!(command, Commands::Statusline) {
+            self.ctx.report_migration();
+        }
         match command {
             Commands::Setup { name, kind } => self.setup(name, kind),
             Commands::Switch { name, yes } => self.switch(&name, yes),
@@ -49,6 +54,7 @@ impl App {
             Commands::StatuslineUninstall => settings::uninstall_statusline(&self.ctx),
             Commands::Purge { yes } => self.purge(yes),
             Commands::Statusline => statusline::handle(&self.ctx),
+            Commands::Sessions { command } => sessions::run(&self.ctx, command),
         }
     }
 
@@ -113,6 +119,11 @@ impl App {
                 kind,
                 created_at,
                 updated_at: now,
+                account_uuid: status
+                    .as_ref()
+                    .and_then(|status| status.email.as_deref())
+                    .and_then(claude::profile_account_uuid),
+                org_uuid: status.as_ref().and_then(|status| status.org_id.clone()),
             },
         );
         storage::save_state(&self.ctx, &state)?;
@@ -234,8 +245,15 @@ impl App {
         );
         println!("credential store: {}", credentials::describe(&self.ctx));
         println!("signed in: {}", describe_active(&self.ctx));
+        if let Some(login) = desktop::describe_login(&state) {
+            println!("desktop: {login}");
+        }
+        println!(
+            "note: switch changes the terminal login only; Claude Desktop signs in on its own"
+        );
         print_config(&config, &state);
         println!("accounts: {}", state.accounts.len());
+        println!("desktop sessions: {}", describe_sessions(&self.ctx));
 
         if cache.accounts.is_empty() {
             println!("quota: none");
@@ -275,12 +293,17 @@ impl App {
                 println!("no stored credential found for {name}");
             }
         }
+        if sessions::stop_background(&self.ctx)
+            .context("failed to stop the sessions launch agent")?
+        {
+            println!("stopped the sessions launch agent");
+        }
         if self.ctx.app_dir.exists() {
             fs::remove_dir_all(&self.ctx.app_dir)
                 .with_context(|| format!("failed to remove {}", self.ctx.app_dir.display()))?;
             println!("removed {}", self.ctx.app_dir.display());
         }
-        println!("the Claude Code login is unchanged; only the router's copies are gone");
+        println!("the Claude Code login is unchanged; only this tool's copies are gone");
         Ok(())
     }
 
@@ -345,6 +368,31 @@ fn describe_active(ctx: &crate::context::AppContext) -> &'static str {
         Ok(_) => "no, Claude Code is signed out; run `claude auth login`",
         Err(_) => "unknown, the active credential could not be read",
     }
+}
+
+/// One line on Desktop session sharing for `status`.
+///
+/// A failure here is reported in the line rather than failing `status`,
+/// whose other lines are about the terminal login and still worth showing.
+fn describe_sessions(ctx: &crate::context::AppContext) -> String {
+    let summary = match sessions::summary(ctx) {
+        Ok(summary) => summary,
+        Err(error) => return format!("unknown, {error:#}"),
+    };
+    let background = match summary.background {
+        None => "background unavailable",
+        Some(true) => "background on",
+        Some(false) => "background off",
+    };
+    let last = summary
+        .last_run_at
+        .map_or_else(|| "never synced".to_string(), |at| format!("last sync {at}"));
+    let hint = if summary.refresh_needed {
+        "; switch Desktop accounts or restart it to see new entries"
+    } else {
+        ""
+    };
+    format!("{background}, {last}{hint}; details: `sessions status`")
 }
 
 fn describe_quota(snapshot: &RateLimitSnapshot, now: i64) -> String {
