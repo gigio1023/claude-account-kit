@@ -90,12 +90,13 @@ impl Publisher<'_> {
         self.try_add(addition).unwrap_or(Outcome::WriteError)
     }
 
-    /// Replace a tool-owned copy with the canonical payload.
+    /// Point a copy at the canonical transcript, if it still holds the bytes
+    /// the plan read.
     pub(super) fn refresh(&mut self, refresh: &Refresh) -> Outcome {
         self.try_refresh(refresh).unwrap_or(Outcome::WriteError)
     }
 
-    /// Delete a tool-owned copy of a conversation whose transcripts are gone.
+    /// Delete a copy the plan removes, if it still holds the bytes the plan read.
     pub(super) fn remove(&mut self, removal: &Removal) -> Outcome {
         self.try_remove(removal).unwrap_or(Outcome::WriteError)
     }
@@ -153,6 +154,9 @@ impl Publisher<'_> {
         }
         staged.replace(&target.path)?;
         platform::sync_dir(partition).ok();
+        if !refresh.owned {
+            return Ok(Outcome::Refreshed);
+        }
         Ok(self.log(LedgerAction::Refreshed, target, &refresh.cli, &bytes))
     }
 

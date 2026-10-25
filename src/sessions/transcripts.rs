@@ -59,6 +59,16 @@ pub(super) struct CliMetadata {
     /// A record in the transcript names a different session.
     pub(super) mismatched: bool,
     pub(super) remote: bool,
+    /// The client that started the session, from the first record naming one.
+    pub(super) entrypoint: Option<String>,
+}
+
+impl CliMetadata {
+    /// Whether Claude Desktop started the session. Desktop then keeps its own
+    /// entry for it, which may only lag behind the transcript.
+    pub(super) fn desktop_started(&self) -> bool {
+        self.entrypoint.as_deref() == Some("claude-desktop")
+    }
 }
 
 /// A CLI-only transcript with its metadata.
@@ -235,6 +245,7 @@ fn index_metadata(fields: &Map<String, Value>) -> CliMetadata {
         sidechain: fields.get("isSidechain") == Some(&Value::Bool(true)),
         mismatched: false,
         remote: is_remote(fields),
+        entrypoint: string(fields, "entrypoint"),
     }
 }
 
@@ -264,6 +275,9 @@ fn merge_record(metadata: &mut CliMetadata, record: &Map<String, Value>, expecte
     if is_remote(record) {
         metadata.remote = true;
     }
+    if metadata.entrypoint.is_none() {
+        metadata.entrypoint = string(record, "entrypoint");
+    }
     if let Some(Value::String(id)) = record.get("sessionId")
         && id != expected.as_str()
     {
@@ -291,6 +305,9 @@ fn overlay(mut indexed: CliMetadata, scanned: CliMetadata) -> CliMetadata {
     indexed.sidechain |= scanned.sidechain;
     indexed.mismatched |= scanned.mismatched;
     indexed.remote |= scanned.remote;
+    if scanned.entrypoint.is_some() {
+        indexed.entrypoint = scanned.entrypoint;
+    }
     if scanned.project_path.is_some() {
         indexed.project_path = scanned.project_path;
     }

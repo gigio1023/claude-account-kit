@@ -128,6 +128,16 @@ impl Sandbox {
     /// Writes transcript `<P>/<project dir of cwd>/<cli>.jsonl` with a short
     /// exchange whose lines record `cwd`, which need not exist.
     fn write_transcript_in(&self, cli: &str, cwd: &Path) -> PathBuf {
+        self.write_transcript_from(cli, cwd, "cli")
+    }
+
+    /// Writes a transcript the way Claude Desktop starts one.
+    fn write_desktop_transcript(&self, cli: &str) -> PathBuf {
+        self.write_transcript_from(cli, &self.cwd, "claude-desktop")
+    }
+
+    /// Writes a transcript whose records name `entrypoint` as the client.
+    fn write_transcript_from(&self, cli: &str, cwd: &Path, entrypoint: &str) -> PathBuf {
         let cwd = cwd.to_str().expect("utf-8 cwd");
         // Claude Code names a project directory after its cwd with every
         // character other than an ASCII letter or digit replaced by '-'.
@@ -137,9 +147,11 @@ impl Sandbox {
             .collect();
         let lines = [
             json!({"type": "user", "sessionId": cli, "cwd": cwd,
+                   "entrypoint": entrypoint,
                    "timestamp": "2026-10-01T00:00:00.000Z",
                    "message": {"role": "user", "content": "hi"}}),
             json!({"type": "assistant", "sessionId": cli, "cwd": cwd,
+                   "entrypoint": entrypoint,
                    "timestamp": "2026-10-01T00:00:05.000Z",
                    "message": {"role": "assistant", "content": [{"type": "text", "text": "hello"}]}}),
         ];
@@ -420,9 +432,11 @@ fn adds_each_conversation_to_every_partition() {
     assert_eq!(read_bytes(&wrapper_path(&a1, &w)), a_original, "contract 2: source wrapper untouched");
 }
 
-/// Contract 2: wrappers Desktop wrote stay byte-identical across runs, even a
-/// stale entry for a conversation that has since moved and an entry whose
-/// transcript is gone.
+/// Contract 2: wrappers Desktop wrote stay byte-identical across runs, even an
+/// entry whose transcript is gone. The one exception is an entry the newest
+/// copy has moved on from: it follows the move to the new transcript and keeps
+/// its own title and other fields, because Desktop rewrites every entry when
+/// an app opens or quits and leaves the entry behind otherwise.
 #[test]
 fn never_modifies_a_wrapper_it_did_not_write() {
     let sb = Sandbox::new();
@@ -434,7 +448,7 @@ fn never_modifies_a_wrapper_it_did_not_write() {
     sb.write_transcript(&x1);
     write_wrapper(&a1, &sb.wrapper_json(&w, &x1, &[], CREATED_MS + MINUTE_MS));
     // Account B's Desktop already lists W: older activity, its own title, an
-    // extra field, compact formatting. Refreshing it would lose all of that.
+    // extra field, compact formatting.
     let mut b_entry = sb.wrapper_json(&w, &x1, &[], CREATED_MS);
     b_entry["title"] = json!("Renamed in account B");
     b_entry["model"] = json!("fixture-model");
@@ -454,7 +468,12 @@ fn never_modifies_a_wrapper_it_did_not_write() {
 
     sb.sync(&[]);
 
-    assert_eq!(read_bytes(&wrapper_path(&b1, &w)), b_original, "B's stale entry is not refreshed");
+    let b_moved = read_json(&wrapper_path(&b1, &w));
+    assert_eq!(b_moved["cliSessionId"], json!(x2), "B's entry follows the move");
+    assert_eq!(b_moved["priorCliSessionIds"], json!([x1]), "B's entry history");
+    assert_eq!(b_moved["lastActivityAt"], json!(CREATED_MS + HOUR_MS), "B's entry activity");
+    assert_eq!(b_moved["title"], json!("Renamed in account B"), "B's own title");
+    assert_eq!(b_moved["model"], json!("fixture-model"), "B's own field");
     assert_eq!(read_bytes(&wrapper_path(&c1, &v)), c_original, "C's orphan entry is not removed");
     assert_eq!(read_bytes(&wrapper_path(&a1, &w)), a_moved, "A's moved entry");
 }
@@ -553,11 +572,11 @@ fn never_touches_transcripts() {
     assert!(changed_paths(&expected, &tree(&sb.projects)).is_empty(), "projects root changed");
 }
 
-/// Contract 5: when Desktop moves a conversation to a new transcript, the
-/// copies the tool wrote follow it, except a copy someone changed since; and
+/// Contract 5: when Desktop moves a conversation to a new transcript, every
+/// copy follows it, and a copy someone changed since keeps that change; and
 /// the run after that changes nothing (contract 7).
 #[test]
-fn refresh_rewrites_only_copies_nobody_else_changed() {
+fn refresh_moves_every_copy_and_keeps_its_changes() {
     let sb = Sandbox::new();
     let a1 = sb.partition(0xA, 0xA1);
     let b1 = sb.partition(0xB, 0xB1);
@@ -570,19 +589,59 @@ fn refresh_rewrites_only_copies_nobody_else_changed() {
         assert_eq!(cli_session_id(&wrapper_path(partition, &w)), x1, "precondition: copy of W");
     }
 
-    let b_edited = edit_title(&wrapper_path(&b1, &w));
+    let b_edited: Value =
+        serde_json::from_slice(&edit_title(&wrapper_path(&b1, &w))).expect("edited wrapper");
     sb.write_transcript(&x2);
     let a_moved = write_wrapper(&a1, &sb.wrapper_json(&w, &x2, &[&x1], CREATED_MS + HOUR_MS));
     sb.sync(&[]);
 
     assert_eq!(cli_session_id(&wrapper_path(&c1, &w)), x2, "contract 5: unchanged copy follows the move");
-    assert_eq!(read_bytes(&wrapper_path(&b1, &w)), b_edited, "contract 5: edited copy left as it was");
+    let b_moved = read_json(&wrapper_path(&b1, &w));
+    assert_eq!(b_moved["cliSessionId"], json!(x2), "contract 5: edited copy follows the move");
+    assert_eq!(b_moved["title"], b_edited["title"], "contract 5: edited title kept");
     assert_eq!(read_bytes(&wrapper_path(&a1, &w)), a_moved, "contract 2: Desktop's wrapper");
 
     let settled = tree(&sb.desktop);
     sb.sync(&[]);
     let changed = changed_paths(&settled, &tree(&sb.desktop));
     assert!(changed.is_empty(), "contract 7: run after a refresh changed {changed:?}");
+}
+
+/// Contract 10: a transcript Desktop started is listed only under Desktop's
+/// own entry. Desktop writes the transcript before its entry points at it, so
+/// a run in between lists nothing, and a second entry named after the
+/// transcript is removed once Desktop's entry names that transcript.
+#[test]
+fn desktop_transcript_is_listed_only_under_desktops_entry() {
+    let sb = Sandbox::new();
+    let a1 = sb.partition(0xA, 0xA1);
+    let b1 = sb.partition(0xB, 0xB1);
+    let (w, x1, x2) = (uuid(0x101), uuid(0x201), uuid(0x202));
+    sb.write_desktop_transcript(&x1);
+
+    sb.sync(&[]);
+
+    for partition in [&a1, &b1] {
+        assert!(
+            wrapper_ids(partition).is_empty(),
+            "nothing listed before Desktop's entry"
+        );
+    }
+
+    // W moves to x2 while both partitions list x2 under its own name, as an
+    // earlier version of the sync did.
+    sb.write_desktop_transcript(&x2);
+    for partition in [&a1, &b1] {
+        write_wrapper(partition, &sb.wrapper_json(&x2, &x2, &[], CREATED_MS));
+    }
+    write_wrapper(&a1, &sb.wrapper_json(&w, &x2, &[&x1], CREATED_MS + HOUR_MS));
+
+    sb.sync(&[]);
+
+    for partition in [&a1, &b1] {
+        assert_eq!(wrapper_ids(partition), set(&[&w]), "only Desktop's entry");
+        assert_eq!(cli_session_id(&wrapper_path(partition, &w)), x2);
+    }
 }
 
 /// Contract 6: once every transcript of a conversation is gone, the copies

@@ -7,10 +7,16 @@
 //! that points at the canonical transcript.
 //!
 //! - A partition without the wrapper gets the canonical payload (an addition).
-//! - A partition whose copy points elsewhere gets the canonical payload only
-//!   when this tool wrote that copy and nobody changed it since (a refresh).
+//! - A partition whose copy points elsewhere is moved to the canonical
+//!   transcript (a refresh) when this tool wrote that copy and nobody changed
+//!   it since, or when the canonical copy lists the copy's transcript as an
+//!   earlier one. Desktop rewrites a copy when an app opens or quits, so
+//!   lineage, not ownership, proves that nobody continued the copy.
 //! - When no transcript of the conversation exists any more, the copies this
 //!   tool owns are deleted (a removal), and Desktop's own copies are left.
+//! - An entry this tool named after a transcript (`local_<transcript id>`) is
+//!   deleted when another conversation lists the same transcript: Desktop had
+//!   written that transcript before its own entry pointed at it.
 //!
 //! Nothing here touches the filesystem; whether a folder exists is asked
 //! through the `is_dir` input.
@@ -46,17 +52,22 @@ pub(super) struct Addition {
     pub(super) payload: Map<String, Value>,
 }
 
-/// A tool-owned copy that points at an older transcript than the canonical one.
+/// A copy that points at an older transcript than the canonical one, and
+/// that this tool owns or that the canonical copy's lineage covers.
 pub(super) struct Refresh {
     pub(super) target: Target,
     pub(super) cli: SessionId,
     pub(super) transcript: PathBuf,
     pub(super) payload: Map<String, Value>,
-    /// The hash that proved ownership; the file must still have it.
+    /// The hash the plan read; the file must still have it.
     pub(super) expected_sha256: String,
+    /// Whether this tool wrote the copy. A copy Desktop wrote is refreshed
+    /// without becoming the tool's, so it is never removed as an orphan.
+    pub(super) owned: bool,
 }
 
-/// A tool-owned copy of a conversation whose transcripts are all gone.
+/// A tool-owned copy of a conversation whose transcripts are all gone, or any
+/// copy of a duplicate entry.
 pub(super) struct Removal {
     pub(super) target: Target,
     pub(super) cli: String,
@@ -80,6 +91,8 @@ pub(super) struct PlanCounts {
     pub(super) diverged_not_owned: u64,
     /// Copies of orphaned conversations that Desktop wrote or changed.
     pub(super) orphan_not_owned: u64,
+    /// Entries named after a transcript that another conversation lists.
+    pub(super) duplicate_sessions: u64,
 }
 
 pub(super) struct Plan {
@@ -119,8 +132,13 @@ pub(super) fn build(input: &PlanInput<'_>, skips: &mut Skips) -> Plan {
     for copy in &input.desktop.copies {
         groups.entry(&copy.wrapper).or_default().push(copy);
     }
+    let claims = transcript_claims(&input.desktop.copies);
     for (wrapper, copies) in &groups {
-        plan_desktop_session(input, wrapper, copies, &mut plan, skips);
+        if is_duplicate(wrapper, copies, &claims) {
+            plan_duplicate(input, copies, &mut plan, skips);
+        } else {
+            plan_desktop_session(input, wrapper, copies, &mut plan, skips);
+        }
     }
     for transcript in input.cli_only {
         let wrapper = WrapperId::for_cli_session(&transcript.id);
@@ -176,6 +194,7 @@ fn plan_desktop_session(
             tombstone_names: tombstone_names.clone(),
         };
         let held = copies.iter().find(|copy| copy.partition == index);
+        let owned = |copy: &WrapperCopy| input.ledger.owns(&target.ledger_key, &copy.sha256);
         if held.is_some_and(|copy| copy.fields.cli_session_id.as_ref() == Some(&canonical.cli)) {
             plan.counts.already_registered += 1;
             continue;
@@ -191,13 +210,14 @@ fn plan_desktop_session(
                 transcript: canonical.transcript.clone(),
                 payload: canonical.payload.clone(),
             }),
-            Some(copy) if input.ledger.owns(&target.ledger_key, &copy.sha256) => {
+            Some(copy) if owned(copy) || continues(canonical.copy, copy) => {
                 refreshed = true;
                 plan.refreshes.push(Refresh {
+                    owned: owned(copy),
                     target,
                     cli: canonical.cli.clone(),
                     transcript: canonical.transcript.clone(),
-                    payload: canonical.payload.clone(),
+                    payload: payload::rebase(&copy.payload, &canonical.payload),
                     expected_sha256: copy.sha256.clone(),
                 });
             }
@@ -273,6 +293,10 @@ fn plan_cli_session(
         skips.add(Skip::RemoteTranscript);
         return;
     }
+    if metadata.desktop_started() {
+        skips.add(Skip::DesktopTranscript);
+        return;
+    }
     let Some(cwd) = metadata
         .project_path
         .as_deref()
@@ -344,13 +368,6 @@ fn newest<'a, T>(items: &'a [T], copy_of: impl Fn(&'a T) -> &'a WrapperCopy) -> 
 }
 
 fn is_newer(candidate: &WrapperCopy, other: &WrapperCopy) -> bool {
-    let continues = |later: &WrapperCopy, earlier: &WrapperCopy| {
-        earlier
-            .fields
-            .cli_session_id
-            .as_ref()
-            .is_some_and(|cli| later.fields.prior_cli_session_ids.contains(cli))
-    };
     let candidate_later = continues(candidate, other);
     let other_later = continues(other, candidate);
     if candidate_later != other_later {
@@ -358,6 +375,73 @@ fn is_newer(candidate: &WrapperCopy, other: &WrapperCopy) -> bool {
     }
     (candidate.fields.last_activity_at, candidate.modified_ms)
         > (other.fields.last_activity_at, other.modified_ms)
+}
+
+/// Whether `later` lists `earlier`'s transcript as one it moved on from.
+fn continues(later: &WrapperCopy, earlier: &WrapperCopy) -> bool {
+    earlier
+        .fields
+        .cli_session_id
+        .as_ref()
+        .is_some_and(|cli| later.fields.prior_cli_session_ids.contains(cli))
+}
+
+/// Every entry that names each transcript, current or earlier.
+fn transcript_claims(copies: &[WrapperCopy]) -> BTreeMap<&SessionId, BTreeSet<&WrapperId>> {
+    let mut claims: BTreeMap<&SessionId, BTreeSet<&WrapperId>> = BTreeMap::new();
+    for copy in copies {
+        for id in &copy.fields.transcript_ids {
+            claims.entry(id).or_default().insert(&copy.wrapper);
+        }
+    }
+    claims
+}
+
+/// Whether an entry is this tool's second name for another conversation.
+///
+/// Every copy must still point at the transcript the entry is named after;
+/// a copy that moved on was continued under this name and is kept.
+fn is_duplicate(
+    wrapper: &WrapperId,
+    copies: &[&WrapperCopy],
+    claims: &BTreeMap<&SessionId, BTreeSet<&WrapperId>>,
+) -> bool {
+    let own = wrapper.uuid();
+    copies
+        .iter()
+        .all(|copy| copy.fields.cli_session_id.as_ref() == Some(own))
+        && claims
+            .get(own)
+            .is_some_and(|wrappers| wrappers.iter().any(|other| *other != wrapper))
+}
+
+/// Remove every copy of a duplicate entry. The transcript stays, listed under
+/// the conversation that names it.
+fn plan_duplicate(
+    input: &PlanInput<'_>,
+    copies: &[&WrapperCopy],
+    plan: &mut Plan,
+    skips: &mut Skips,
+) {
+    plan.counts.duplicate_sessions += 1;
+    for copy in copies {
+        if is_blocked(input, copy.partition) {
+            skips.add(Skip::IncompleteTarget);
+            continue;
+        }
+        let partition = &input.desktop.partitions[copy.partition];
+        plan.removals.push(Removal {
+            target: Target {
+                desktop_root: partition.desktop_root.clone(),
+                path: partition.dir.join(copy.wrapper.file_name()),
+                relative: partition.relative_path(&copy.wrapper),
+                ledger_key: partition.ledger_key(&copy.wrapper),
+                tombstone_names: BTreeSet::new(),
+            },
+            cli: copy.wrapper.uuid().to_string(),
+            expected_sha256: copy.sha256.clone(),
+        });
+    }
 }
 
 /// Why a partition may not receive a write for this conversation, if it may not.
