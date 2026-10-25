@@ -12,15 +12,15 @@ Desktop keeps one small file per session and account:
 
 Each file points at a Claude Code transcript through `cliSessionId`. A sync adds the files an account is missing, each pointing at the same transcript. No transcript is copied or edited, and nothing leaves the machine.
 
-- **Sources.** Sessions Desktop already lists in any account, and sessions started from the terminal with `claude`, read from their transcript.
+- **Sources.** Sessions Desktop already lists in any account, and sessions started from the terminal with `claude`, read from their transcript. A transcript Desktop started is listed only through Desktop's own entry: Desktop writes the transcript a few seconds before its entry points at it, and an entry made in between would list the conversation twice. An entry an earlier version made that way, named `local_<transcript id>`, is removed once another entry names the same transcript.
 - **Skipped.** Archived and hidden sessions, SSH, WSL, and cloud sessions, subagent transcripts, and sessions whose working folder no longer exists. Desktop cannot open a session without its folder, so these come back on their own once the folder does.
 - **Deletions.** A session you deleted in one account is never added back to that account.
-- **Rewind and fork.** Desktop moves a session to a new transcript in the account where you rewound it and leaves the other accounts on the old one. A sync points the copies it wrote at the newest transcript.
+- **Rewind, fork, and continued sessions.** Desktop moves a session to a new transcript in the account where you rewound or continued it and leaves the other accounts on the old one. A sync points every copy at the newest transcript when the newest copy lists the copy's transcript in `priorCliSessionIds`. A copy Desktop wrote keeps its own title, permissions, and archive flag. A copy that moved to a transcript the newest copy does not list was continued separately and is left alone.
 - **Removed transcripts.** When every transcript of a session is gone, the copies the sync wrote are deleted. The entry Desktop wrote stays, and Desktop shows it as unavailable. When `~/.claude/projects` holds no transcript at all, nothing is deleted, because an empty or unmounted folder looks the same as every session being gone.
 
 ## What it never changes
 
-The sync changes a Desktop file only when it can prove it wrote that file. Every write is recorded with the file's SHA-256 in `ledger.jsonl` in the tool's state directory. An entry Desktop wrote, or one Desktop changed after the sync wrote it, is left as it is; `sessions status` counts these as left alone. New files are published with a hard link, which fails instead of replacing a file Desktop created at the same moment.
+The sync deletes a Desktop file only when it can prove it wrote that file, or when the file is a duplicate entry described above. Every write to a file the sync owns is recorded with the file's SHA-256 in `ledger.jsonl` in the tool's state directory. An entry Desktop wrote, or one Desktop changed after the sync wrote it, is changed only to follow its own conversation to a newer transcript, and it stays Desktop's: it is not recorded as the sync's and is never removed as an orphan. Other such entries are left as they are; `sessions status` counts these as left alone. Desktop rewrites an entry from memory when an app quits, so an app that was open during a move can put its entry back on the old transcript; the next sync moves it forward again. New files are published with a hard link, which fails instead of replacing a file Desktop created at the same moment.
 
 The sync adds entries only to account folders Desktop has already created. Desktop creates one the first time an account is active.
 

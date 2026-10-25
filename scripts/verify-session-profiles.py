@@ -137,7 +137,8 @@ def _verify_sharing(fixture: _Fixture, old: Path, new: Path) -> None:
     legacy_b: bytes = fixture.wrapper(b, 101).read_bytes()
 
     # Exact bytes and the same account/org/path must not transfer ownership
-    # from the primary ledger to a Desktop original in another profile.
+    # from the primary ledger to a Desktop original in another profile. The
+    # original still follows the move it is behind on, without becoming owned.
     b_extra: Path = fixture.partition(fixture.extra, 2, 22)
     c_extra: Path = fixture.partition(fixture.extra, 3, 33)
     fixture.wrapper(b_extra, 101).write_bytes(legacy_b)
@@ -159,7 +160,8 @@ def _verify_sharing(fixture: _Fixture, old: Path, new: Path) -> None:
     report = fixture.run(new, roots)
     assert report["partitions"] == 4, report
     assert _object(fixture.wrapper(b, 101).read_text())["cliSessionId"] == _uuid(203)
-    assert fixture.wrapper(b_extra, 101).read_bytes() == legacy_b
+    moved_b_extra: bytes = fixture.wrapper(b_extra, 101).read_bytes()
+    assert _object(moved_b_extra.decode())["cliSessionId"] == _uuid(203)
     assert _object(fixture.wrapper(c_extra, 101).read_text())["cliSessionId"] == _uuid(203)
     assert _object(fixture.wrapper(a, 102).read_text())["cliSessionId"] == _uuid(202)
     assert not fixture.wrapper(b, 102).exists() and not fixture.wrapper(b_extra, 102).exists()
@@ -179,7 +181,7 @@ def _verify_sharing(fixture: _Fixture, old: Path, new: Path) -> None:
     x2.unlink()
     fixture.run(new, roots)
     assert not fixture.wrapper(b, 101).exists() and not fixture.wrapper(c_extra, 101).exists()
-    assert fixture.wrapper(b_extra, 101).read_bytes() == legacy_b
+    assert fixture.wrapper(b_extra, 101).read_bytes() == moved_b_extra
     assert fixture.wrapper(a, 101).read_bytes() == original_a
     assert fixture.wrapper(c_extra, 102).read_bytes() == original_c and marker.exists()
     for root in [fixture.primary, fixture.extra]:

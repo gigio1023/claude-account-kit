@@ -39,6 +39,10 @@ pub(super) enum Skip {
     RemoteTranscript,
     /// A CLI transcript whose working folder no longer exists.
     UnknownCwd,
+    /// A transcript Desktop started that no Desktop entry names yet. Desktop
+    /// writes the transcript before it points its entry at it, and an entry
+    /// made here in between would list the conversation twice.
+    DesktopTranscript,
     /// A CLI transcript whose `local_<id>` name a Desktop entry already uses.
     WrapperIdTaken,
     /// A target partition whose metadata could not be read completely.
@@ -67,6 +71,7 @@ impl Skip {
             Self::SidechainOrMismatchedTranscript => "sidechain_or_mismatched_transcript",
             Self::RemoteTranscript => "remote_transcript",
             Self::UnknownCwd => "unknown_cwd",
+            Self::DesktopTranscript => "desktop_transcript",
             Self::WrapperIdTaken => "wrapper_id_taken",
             Self::IncompleteTarget => "incomplete_target",
             Self::DeletedInAccount => "deleted_in_account",

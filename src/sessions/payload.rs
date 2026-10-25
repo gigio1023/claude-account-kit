@@ -35,6 +35,34 @@ const HISTORY_FIELDS: [&str; 19] = [
     "lineageDetached",
 ];
 
+/// Fields a refresh takes from the canonical payload: which transcript to
+/// resume, where it runs, and when it was last active.
+const POINTER_FIELDS: [&str; 4] = ["cliSessionId", "cwd", "originCwd", "lastActivityAt"];
+
+/// Point an existing copy at the canonical transcript.
+///
+/// The copy keeps its per-partition state, such as its title, permissions, and
+/// archive flag. It takes the pointer and history fields from `canonical` and drops
+/// history fields `canonical` lacks, since a stale rewind edge or transcript
+/// cut would resume the wrong branch.
+pub(super) fn rebase(
+    copy: &Map<String, Value>,
+    canonical: &Map<String, Value>,
+) -> Map<String, Value> {
+    let mut payload = copy.clone();
+    for key in POINTER_FIELDS.iter().chain(&HISTORY_FIELDS) {
+        match canonical.get(*key) {
+            Some(value) => {
+                payload.insert((*key).to_string(), value.clone());
+            }
+            None => {
+                payload.shift_remove(*key);
+            }
+        }
+    }
+    payload
+}
+
 /// Build the payload to publish from a Desktop wrapper.
 ///
 /// `None` when the wrapper has no existing working folder or no valid times;
