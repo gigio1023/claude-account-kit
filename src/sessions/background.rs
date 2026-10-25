@@ -15,6 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use serde_json::Value;
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, ErrorKind, Read};
 use std::path::Path;
@@ -44,9 +45,24 @@ pub(super) struct BackgroundStatus {
 }
 
 /// The plist text, ready for `~/Library/LaunchAgents`.
-pub(super) fn render_plist(program: &Path, interval: u32, watch: &Path) -> String {
+pub(super) fn render_plist(program: &Path, interval: u32, paths: &SessionPaths) -> String {
     let program = escape(&program.to_string_lossy());
-    let watch = escape(&watch.to_string_lossy());
+    let mut arguments: String = String::new();
+    for root in &paths.additional_desktop_roots {
+        let _ = writeln!(
+            arguments,
+            "\t\t<string>--additional-desktop-root</string>\n\t\t<string>{}</string>",
+            escape(&root.to_string_lossy())
+        );
+    }
+    let mut watches: String = String::new();
+    for root in paths.desktop_roots() {
+        let _ = writeln!(
+            watches,
+            "\t\t<string>{}</string>",
+            escape(&root.join("claude-code-sessions").to_string_lossy())
+        );
+    }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -64,7 +80,7 @@ pub(super) fn render_plist(program: &Path, interval: u32, watch: &Path) -> Strin
 		<string>sessions</string>
 		<string>sync</string>
 		<string>--background</string>
-	</array>
+{arguments}	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
@@ -77,8 +93,7 @@ pub(super) fn render_plist(program: &Path, interval: u32, watch: &Path) -> Strin
 	<integer>{umask}</integer>
 	<key>WatchPaths</key>
 	<array>
-		<string>{watch}</string>
-	</array>
+{watches}	</array>
 </dict>
 </plist>
 "#,
@@ -109,7 +124,7 @@ pub(super) fn turn_on(paths: &SessionPaths, interval: u32) -> Result<BackgroundS
              leaving it unchanged"
         );
     }
-    let plist = render_plist(&program, interval, &paths.sessions_root());
+    let plist = render_plist(&program, interval, paths);
     let dir = paths
         .launch_agent
         .parent()
@@ -208,12 +223,19 @@ fn owned_plist(path: &Path) -> Result<Option<OwnedPlist>> {
         }
     }
     let path_text = path.to_string_lossy();
-    let output = run_bounded("/usr/bin/plutil", &["-convert", "json", "-o", "-", &path_text])?;
+    let output = run_bounded(
+        "/usr/bin/plutil",
+        &["-convert", "json", "-o", "-", &path_text],
+    )?;
     if !output.success {
         bail!("{} is not a readable plist; leaving it unchanged", path.display());
     }
-    let plist: Value = serde_json::from_str(&output.text)
-        .with_context(|| format!("{} is not a readable plist; leaving it unchanged", path.display()))?;
+    let plist: Value = serde_json::from_str(&output.text).with_context(|| {
+        format!(
+            "{} is not a readable plist; leaving it unchanged",
+            path.display()
+        )
+    })?;
     if plist.get("Label").and_then(Value::as_str) != Some(LAUNCH_AGENT_LABEL) {
         bail!("{} belongs to another job; leaving it unchanged", path.display());
     }
@@ -250,10 +272,14 @@ fn launchctl(args: &[&str], missing_ok: bool) -> Result<Option<String>> {
     if missing_ok && missing {
         return Ok(None);
     }
-    let reason = ["operation not permitted", "permission denied", "input/output error"]
-        .into_iter()
-        .find(|phrase| lower.contains(phrase))
-        .unwrap_or("service operation failed");
+    let reason = [
+        "operation not permitted",
+        "permission denied",
+        "input/output error",
+    ]
+    .into_iter()
+    .find(|phrase| lower.contains(phrase))
+    .unwrap_or("service operation failed");
     bail!(
         "launchctl {} failed: {reason} (exit {})",
         args[0],

@@ -20,7 +20,7 @@ use crate::time::now_epoch;
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::{self, ErrorKind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What happened to one planned change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,8 +79,7 @@ impl Outcome {
 
 /// Writes into `claude-code-sessions`, each recorded in the ledger.
 pub(super) struct Publisher<'a> {
-    pub(super) desktop_root: &'a Path,
-    pub(super) sessions_root: &'a Path,
+    pub(super) desktop_roots: &'a [PathBuf],
     pub(super) ledger_path: &'a Path,
     pub(super) ledger: &'a mut Ledger,
 }
@@ -107,7 +106,7 @@ impl Publisher<'_> {
         if fs::symlink_metadata(&target.path).is_ok() {
             return Ok(Outcome::AlreadyExists);
         }
-        if deleted_in_account(target) {
+        if deleted_in_account(target, self.desktop_roots) {
             return Ok(Outcome::DeletedSinceScan);
         }
         if !is_regular_file(&addition.transcript) {
@@ -115,7 +114,7 @@ impl Publisher<'_> {
         }
         let bytes = encode(&addition.payload)?;
         let staged = StagedFile::write(partition, &bytes)?;
-        if deleted_in_account(target) {
+        if deleted_in_account(target, self.desktop_roots) {
             return Ok(Outcome::DeletedSinceScan);
         }
         match staged.link_new(&target.path) {
@@ -133,7 +132,7 @@ impl Publisher<'_> {
     fn try_refresh(&mut self, refresh: &Refresh) -> io::Result<Outcome> {
         let target = &refresh.target;
         let partition = self.check_target(target)?;
-        if deleted_in_account(target) {
+        if deleted_in_account(target, self.desktop_roots) {
             return Ok(Outcome::DeletedSinceScan);
         }
         if !is_regular_file(&refresh.transcript) {
@@ -175,7 +174,7 @@ impl Publisher<'_> {
         let record = LedgerRecord {
             at: timestamp::format_utc(now_epoch()),
             action: LedgerAction::Removed,
-            relative_path: target.relative.clone(),
+            relative_path: target.ledger_key.clone(),
             cli_session_id: removal.cli.clone(),
             sha256: removal.expected_sha256.clone(),
         };
@@ -205,7 +204,11 @@ impl Publisher<'_> {
             }
             _ => false,
         };
-        if !well_formed || target.path != self.sessions_root.join(&target.relative) {
+        let sessions_root: PathBuf = target.desktop_root.join("claude-code-sessions");
+        if !well_formed
+            || !self.desktop_roots.contains(&target.desktop_root)
+            || target.path != sessions_root.join(&target.relative)
+        {
             return Err(bounded::invalid("unexpected Desktop session path"));
         }
         let partition = target
@@ -215,20 +218,33 @@ impl Publisher<'_> {
         let account = partition
             .parent()
             .ok_or_else(|| bounded::invalid("Desktop session path has no account"))?;
-        let real = [self.desktop_root, self.sessions_root, account, partition]
-            .into_iter()
-            .all(bounded::is_real_dir);
+        let real = [
+            target.desktop_root.as_path(),
+            sessions_root.as_path(),
+            account,
+            partition,
+        ]
+        .into_iter()
+        .all(bounded::is_real_dir);
         if !real {
-            return Err(bounded::invalid("Desktop session directories must be real directories"));
+            return Err(bounded::invalid(
+                "Desktop session directories must be real directories",
+            ));
         }
         Ok(partition)
     }
 
-    fn log(&mut self, action: LedgerAction, target: &Target, cli: &SessionId, bytes: &[u8]) -> Outcome {
+    fn log(
+        &mut self,
+        action: LedgerAction,
+        target: &Target,
+        cli: &SessionId,
+        bytes: &[u8],
+    ) -> Outcome {
         let record = LedgerRecord {
             at: timestamp::format_utc(now_epoch()),
             action,
-            relative_path: target.relative.clone(),
+            relative_path: target.ledger_key.clone(),
             cli_session_id: cli.to_string(),
             sha256: sha256_hex(bytes),
         };
@@ -246,19 +262,37 @@ impl Publisher<'_> {
 
 /// Whether any partition of the target's account holds a `deleted_*` marker
 /// for the conversation. An unreadable account directory counts as yes.
-fn deleted_in_account(target: &Target) -> bool {
-    let Some(account) = target.path.parent().and_then(Path::parent) else {
+fn deleted_in_account(target: &Target, desktop_roots: &[PathBuf]) -> bool {
+    let Some(account) = target.relative.split('/').next() else {
         return true;
     };
-    let Ok(partitions) = bounded::entries(account) else {
-        return true;
-    };
-    partitions
-        .iter()
-        .filter(|partition| bounded::is_real_dir(partition))
-        .any(|partition| {
-            target.tombstone_names.iter().any(|name| {
-                fs::symlink_metadata(partition.join(format!("deleted_{name}"))).is_ok()
+    desktop_roots.iter().any(|root| {
+        let account_dir: PathBuf = root.join("claude-code-sessions").join(account);
+        if fs::symlink_metadata(&account_dir)
+            .is_err_and(|error| error.kind() == ErrorKind::NotFound)
+        {
+            return false;
+        }
+        if ![
+            root.as_path(),
+            root.join("claude-code-sessions").as_path(),
+            account_dir.as_path(),
+        ]
+        .into_iter()
+        .all(bounded::is_real_dir)
+        {
+            return true;
+        }
+        let Ok(partitions) = bounded::entries(&account_dir) else {
+            return true;
+        };
+        partitions
+            .iter()
+            .filter(|partition| bounded::is_real_dir(partition))
+            .any(|partition| {
+                target.tombstone_names.iter().any(|name| {
+                    fs::symlink_metadata(partition.join(format!("deleted_{name}"))).is_ok()
+                })
             })
         })
 }

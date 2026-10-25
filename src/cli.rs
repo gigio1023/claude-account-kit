@@ -99,6 +99,9 @@ pub(crate) enum SessionsCommand {
         /// Claude Desktop's data directory, for runs against a copy.
         #[arg(long, hide = true)]
         desktop_root: Option<PathBuf>,
+        /// Also share with this Desktop user-data directory, not its claude-code-sessions child. Repeat for each profile.
+        #[arg(long, value_name = "USER_DATA_DIR")]
+        additional_desktop_root: Vec<PathBuf>,
         /// Claude Code's transcript directory, for runs against a copy.
         #[arg(long, hide = true)]
         projects_root: Option<PathBuf>,
@@ -122,6 +125,9 @@ pub(crate) enum BackgroundAction {
         /// Seconds between runs.
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
         interval: u32,
+        /// Also share with this Desktop user-data directory. Repeat for each profile.
+        #[arg(long, value_name = "USER_DATA_DIR")]
+        additional_desktop_root: Vec<PathBuf>,
     },
     /// Stop and remove the launch agent; entries already added stay.
     Off,
@@ -130,6 +136,8 @@ pub(crate) enum BackgroundAction {
     Plist {
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..))]
         interval: u32,
+        #[arg(long, value_name = "USER_DATA_DIR")]
+        additional_desktop_root: Vec<PathBuf>,
     },
 }
 

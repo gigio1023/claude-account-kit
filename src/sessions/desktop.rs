@@ -19,6 +19,9 @@ use std::path::{Path, PathBuf};
 
 /// One account and organization's session list directory.
 pub(super) struct Partition {
+    pub(super) desktop_root: PathBuf,
+    /// Empty for the primary root, preserving existing ledger ownership.
+    pub(super) ledger_prefix: String,
     pub(super) account: SessionId,
     pub(super) org: SessionId,
     pub(super) dir: PathBuf,
@@ -28,6 +31,11 @@ impl Partition {
     /// The path of an entry relative to `claude-code-sessions`, as the ledger records it.
     pub(super) fn relative_path(&self, wrapper: &WrapperId) -> String {
         format!("{}/{}/{}", self.account, self.org, wrapper.file_name())
+    }
+
+    /// Ownership key unique to this root, account, organization, and wrapper.
+    pub(super) fn ledger_key(&self, wrapper: &WrapperId) -> String {
+        format!("{}{}", self.ledger_prefix, self.relative_path(wrapper))
     }
 }
 
@@ -113,8 +121,18 @@ impl DesktopScan {
 }
 
 /// Find the partitions and read every wrapper and marker in them.
-pub(super) fn scan(sessions_root: &Path, budget: &mut ReadBudget, skips: &mut Skips) -> DesktopScan {
-    let (partitions, complete) = find_partitions(sessions_root, skips);
+pub(super) fn scan(
+    desktop_roots: &[PathBuf],
+    budget: &mut ReadBudget,
+    skips: &mut Skips,
+) -> DesktopScan {
+    let mut partitions: Vec<Partition> = Vec::new();
+    let mut complete: bool = true;
+    for (index, root) in desktop_roots.iter().enumerate() {
+        let (found, finished): (Vec<Partition>, bool) = find_partitions(root, index == 0, skips);
+        partitions.extend(found);
+        complete &= finished;
+    }
     let mut scan = DesktopScan {
         partitions,
         copies: Vec::new(),
@@ -160,13 +178,18 @@ pub(super) fn scan(sessions_root: &Path, budget: &mut ReadBudget, skips: &mut Sk
 }
 
 /// Real `<uuid>/<uuid>` directories under the root, and whether listing finished.
-fn find_partitions(root: &Path, skips: &mut Skips) -> (Vec<Partition>, bool) {
+fn find_partitions(
+    desktop_root: &Path,
+    primary: bool,
+    skips: &mut Skips,
+) -> (Vec<Partition>, bool) {
+    let root: PathBuf = desktop_root.join("claude-code-sessions");
     let mut partitions = Vec::new();
     let parent_ok = root.parent().is_some_and(bounded::is_real_dir);
-    if !parent_ok || !bounded::is_real_dir(root) {
+    if !parent_ok || !bounded::is_real_dir(&root) {
         return (partitions, true);
     }
-    let Ok(accounts) = bounded::entries(root) else {
+    let Ok(accounts) = bounded::entries(&root) else {
         skips.add(Skip::InventoryIncomplete);
         return (partitions, false);
     };
@@ -181,6 +204,15 @@ fn find_partitions(root: &Path, skips: &mut Skips) -> (Vec<Partition>, bool) {
         for org_dir in orgs.into_iter().filter(|path| bounded::is_real_dir(path)) {
             if let Some(org) = uuid_name(&org_dir) {
                 partitions.push(Partition {
+                    desktop_root: desktop_root.to_path_buf(),
+                    ledger_prefix: if primary {
+                        String::new()
+                    } else {
+                        format!(
+                            "profiles/{}/",
+                            sha256_hex(desktop_root.as_os_str().as_encoded_bytes())
+                        )
+                    },
                     account: account.clone(),
                     org,
                     dir: org_dir,

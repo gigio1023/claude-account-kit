@@ -24,6 +24,23 @@ The sync changes a Desktop file only when it can prove it wrote that file. Every
 
 The sync adds entries only to account folders Desktop has already created. Desktop creates one the first time an account is active.
 
+## Separate Desktop profiles
+
+For Desktop instances launched with separate user-data directories, pass each additional directory explicitly. The value is the profile's user-data directory, such as `Claude-personal`, not its `claude-code-sessions` child. The default `Claude` directory remains included.
+
+```bash
+claude-account-kit sessions sync --dry-run \
+  --additional-desktop-root "$HOME/Library/Application Support/Claude-personal"
+claude-account-kit sessions background on \
+  --additional-desktop-root "$HOME/Library/Application Support/Claude-personal"
+```
+
+Repeat `--additional-desktop-root` for each profile. Use the same flags for a manual sync. `background on` stores them in the launch agent and watches each selected profile's session directory. A missing profile or account directory is left absent until Desktop creates it after login. Other sibling directories are never discovered automatically.
+
+If a previously observed profile's session directory disappears, writes pause until it returns. Its deletion markers may be needed to protect another profile of the same account. The tool keeps only root hashes in `seen-desktop-roots.json` to distinguish this case from a profile that has never been initialized.
+
+All selected profiles share the same local transcript inventory. The sync combines their session lists and respects a deletion marker across profiles of the same account. Each profile has its own ownership keys, even when the account and organization IDs match. Existing ownership records for the default profile retain their meaning. Authentication, browser storage, Chat, and Cowork data are outside this sync.
+
 ## Commands
 
 ```bash
@@ -50,3 +67,15 @@ Desktop reads an account's list when it opens that account, so new entries show 
 ## Moving from claude-local-sessions
 
 The sync takes over from the earlier `claude-local-sessions` script. On its first write run it imports that script's record of the files it created from `~/Library/Application Support/Claude Local Sessions/created-records.jsonl`, so those files count as the sync's own. Turn the old launch agent off before turning this one on.
+
+## Verifying profile migration
+
+Keep the pre-change binary before replacing it. The fixture uses that binary to create an existing ownership ledger, then verifies the new binary against synthetic profiles. It preserves its inputs, commands, reports, and both binary hashes in the printed temporary directory.
+
+```bash
+python3 scripts/verify-session-profiles.py \
+  --old-binary /path/to/backed-up/claude-account-kit \
+  --new-binary target/release/claude-account-kit
+```
+
+The fixture covers shared sessions, profile-specific ownership, deletions, missing profiles, duplicate arguments, dry run, repeated runs, and LaunchAgent configuration. It does not use real account data or install the LaunchAgent.

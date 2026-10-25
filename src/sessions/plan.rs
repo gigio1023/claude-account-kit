@@ -28,9 +28,12 @@ use std::path::PathBuf;
 
 /// A Desktop file this tool would write or remove.
 pub(super) struct Target {
+    pub(super) desktop_root: PathBuf,
     pub(super) path: PathBuf,
     /// The path under `claude-code-sessions`, as the ledger records it.
     pub(super) relative: String,
+    /// Root-qualified ownership key; legacy primary-root keys stay unchanged.
+    pub(super) ledger_key: String,
     /// Every name a `deleted_*` marker for this conversation could use.
     pub(super) tombstone_names: BTreeSet<String>,
 }
@@ -153,7 +156,11 @@ fn plan_desktop_session(
         .collect();
     let Some(canonical) = newest(&sources, |source| source.copy) else {
         if let Some(newest_copy) = newest(copies, |copy| *copy) {
-            skips.add(source(input, newest_copy).err().unwrap_or(Skip::MissingTranscript));
+            skips.add(
+                source(input, newest_copy)
+                    .err()
+                    .unwrap_or(Skip::MissingTranscript),
+            );
         }
         return;
     };
@@ -162,8 +169,10 @@ fn plan_desktop_session(
     let mut refreshed = false;
     for (index, partition) in input.desktop.partitions.iter().enumerate() {
         let target = Target {
+            desktop_root: partition.desktop_root.clone(),
             path: partition.dir.join(wrapper.file_name()),
             relative: partition.relative_path(wrapper),
+            ledger_key: partition.ledger_key(wrapper),
             tombstone_names: tombstone_names.clone(),
         };
         let held = copies.iter().find(|copy| copy.partition == index);
@@ -182,7 +191,7 @@ fn plan_desktop_session(
                 transcript: canonical.transcript.clone(),
                 payload: canonical.payload.clone(),
             }),
-            Some(copy) if input.ledger.owns(&target.relative, &copy.sha256) => {
+            Some(copy) if input.ledger.owns(&target.ledger_key, &copy.sha256) => {
                 refreshed = true;
                 plan.refreshes.push(Refresh {
                     target,
@@ -221,7 +230,8 @@ fn plan_orphan(
     for copy in copies {
         let partition = &input.desktop.partitions[copy.partition];
         let relative = partition.relative_path(&copy.wrapper);
-        if !input.ledger.owns(&relative, &copy.sha256) {
+        let ledger_key: String = partition.ledger_key(&copy.wrapper);
+        if !input.ledger.owns(&ledger_key, &copy.sha256) {
             plan.counts.orphan_not_owned += 1;
             continue;
         }
@@ -231,8 +241,10 @@ fn plan_orphan(
         }
         plan.removals.push(Removal {
             target: Target {
+                desktop_root: partition.desktop_root.clone(),
                 path: partition.dir.join(copy.wrapper.file_name()),
                 relative,
+                ledger_key,
                 tombstone_names: tombstone_names.clone(),
             },
             cli: copy
@@ -279,8 +291,10 @@ fn plan_cli_session(
         }
         plan.additions.push(Addition {
             target: Target {
+                desktop_root: partition.desktop_root.clone(),
                 path: partition.dir.join(wrapper.file_name()),
                 relative: partition.relative_path(wrapper),
+                ledger_key: partition.ledger_key(wrapper),
                 tombstone_names: tombstone_names.clone(),
             },
             cli: transcript.id.clone(),
