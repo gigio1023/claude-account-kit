@@ -35,7 +35,13 @@ pub(super) fn prepare_dir(paths: &SessionPaths) -> Result<()> {
     platform::restrict_dir(dir).with_context(|| format!("failed to restrict {}", dir.display()))?;
     // Checked before a run writes anything into Desktop's data, so a planted
     // symlink stops the run instead of failing it halfway.
-    for file in [paths.ledger(), paths.last_run(), paths.fingerprint(), paths.lock()] {
+    for file in [
+        paths.ledger(),
+        paths.last_run(),
+        paths.fingerprint(),
+        paths.seen_roots(),
+        paths.lock(),
+    ] {
         if fs::symlink_metadata(&file).is_ok_and(|metadata| !metadata.file_type().is_file()) {
             bail!("refusing to use {} because it is not a regular file", file.display());
         }
@@ -47,7 +53,11 @@ pub(super) fn prepare_dir(paths: &SessionPaths) -> Result<()> {
 /// comparing both the paths as given and the paths symlinks resolve to.
 pub(super) fn check_location(paths: &SessionPaths) -> Result<()> {
     let state = resolved(&paths.state_dir);
-    for protected in [&paths.desktop_root, &paths.projects_root] {
+    for protected in paths
+        .desktop_roots()
+        .iter()
+        .chain(std::iter::once(&paths.projects_root))
+    {
         if paths.state_dir.starts_with(protected) || state.starts_with(resolved(protected)) {
             bail!(
                 "refusing to keep session state in {}, which is inside {}",
@@ -99,7 +109,10 @@ fn resolved(path: &Path) -> PathBuf {
             }
             return result;
         }
-        match (existing.file_name().map(ToOwned::to_owned), existing.parent()) {
+        match (
+            existing.file_name().map(ToOwned::to_owned),
+            existing.parent(),
+        ) {
             (Some(name), Some(parent)) => {
                 rest.push(name);
                 existing = parent.to_path_buf();

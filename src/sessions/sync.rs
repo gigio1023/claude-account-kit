@@ -5,7 +5,7 @@
 //! summary. A background run first compares a cheap fingerprint with the last
 //! full run and stops there when nothing changed recently.
 
-use super::bounded::ReadBudget;
+use super::bounded::{self, ReadBudget};
 use super::desktop::{self, DesktopScan};
 use super::fingerprint::{self, StoredFingerprint};
 use super::ledger::{self, Ledger, LedgerAction};
@@ -20,7 +20,7 @@ use super::timestamp;
 use super::transcripts::{self, CliTranscript, TranscriptInventory};
 use crate::time::now_epoch;
 use anyhow::Result;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 /// A background run skips planning when the fingerprint matches a full run
@@ -42,7 +42,7 @@ pub(super) fn full_run(paths: &SessionPaths, kind: RunKind) -> Result<Option<Run
         state::check_location(paths)?;
         let ledger = ledger::load(&paths.ledger(), &paths.legacy_ledger)?;
         let mut skips = Skips::default();
-        let discovery = discover(paths, &mut skips);
+        let discovery = discover(paths, &mut skips)?;
         let plan = plan::build(&discovery.input(&ledger), &mut skips);
         let warnings = warnings(&discovery, &skips);
         let mut report = summarize(&plan, &skips, warnings, &[], started);
@@ -51,7 +51,7 @@ pub(super) fn full_run(paths: &SessionPaths, kind: RunKind) -> Result<Option<Run
     }
 
     state::prepare_dir(paths)?;
-    let digest = fingerprint::compute(&paths.sessions_root(), &paths.projects_root);
+    let digest = fingerprint::compute(&paths.desktop_roots(), &paths.projects_root);
     let Some(_lock) = RunLock::try_acquire(&paths.lock())? else {
         return Ok(None);
     };
@@ -59,9 +59,12 @@ pub(super) fn full_run(paths: &SessionPaths, kind: RunKind) -> Result<Option<Run
     ledger::persist_import(&mut ledger, &paths.ledger(), &paths.state_dir)?;
 
     let mut skips = Skips::default();
-    let discovery = discover(paths, &mut skips);
+    let discovery = discover(paths, &mut skips)?;
     let plan = plan::build(&discovery.input(&ledger), &mut skips);
     let warnings = warnings(&discovery, &skips);
+    // Remember observed roots before publishing. A temporarily missing profile
+    // may hold the only deletion marker for an account in another profile.
+    state::write_json(&paths.seen_roots(), &discovery.seen_roots)?;
     let outcomes = publish(paths, &mut ledger, &plan);
 
     let mut report = summarize(&plan, &skips, warnings, &outcomes, started);
@@ -83,7 +86,7 @@ pub(super) fn full_run(paths: &SessionPaths, kind: RunKind) -> Result<Option<Run
 /// or there is none to do.
 pub(super) fn background_run(paths: &SessionPaths) -> Result<bool> {
     state::prepare_dir(paths)?;
-    let digest = fingerprint::compute(&paths.sessions_root(), &paths.projects_root);
+    let digest = fingerprint::compute(&paths.desktop_roots(), &paths.projects_root);
     if recently_unchanged(paths, &digest) {
         return Ok(true);
     }
@@ -107,6 +110,7 @@ struct Discovery {
     desktop: DesktopScan,
     transcripts: TranscriptInventory,
     cli_only: Vec<CliTranscript>,
+    seen_roots: BTreeSet<String>,
 }
 
 impl Discovery {
@@ -121,32 +125,53 @@ impl Discovery {
     }
 }
 
-fn discover(paths: &SessionPaths, skips: &mut Skips) -> Discovery {
+fn discover(paths: &SessionPaths, skips: &mut Skips) -> Result<Discovery> {
     let mut budget = ReadBudget::new();
-    let desktop = desktop::scan(&paths.sessions_root(), &mut budget, skips);
+    let mut desktop = desktop::scan(&paths.desktop_roots(), &mut budget, skips);
+    let mut seen_roots: BTreeSet<String> = state::read_json(&paths.seen_roots())?.unwrap_or_default();
+    for root in paths.desktop_roots() {
+        let key: String = desktop::sha256_hex(root.as_os_str().as_encoded_bytes());
+        if bounded::is_real_dir(&root) && bounded::is_real_dir(&root.join("claude-code-sessions")) {
+            seen_roots.insert(key);
+        } else if seen_roots.contains(&key) {
+            desktop.complete = false;
+        }
+    }
     let transcripts = transcripts::inventory(&paths.projects_root, skips);
     let known = desktop.known_transcript_ids();
     let cli_only = transcripts::read_cli_only(&transcripts, &known, &mut budget, skips);
-    Discovery {
+    Ok(Discovery {
         desktop,
         transcripts,
         cli_only,
-    }
+        seen_roots,
+    })
 }
 
 fn publish(paths: &SessionPaths, ledger: &mut Ledger, plan: &Plan) -> Vec<Outcome> {
-    let sessions_root = paths.sessions_root();
+    let desktop_roots = paths.desktop_roots();
     let ledger_path = paths.ledger();
     let mut publisher = Publisher {
-        desktop_root: &paths.desktop_root,
-        sessions_root: &sessions_root,
+        desktop_roots: &desktop_roots,
         ledger_path: &ledger_path,
         ledger,
     };
     let mut outcomes = Vec::new();
-    outcomes.extend(plan.removals.iter().map(|removal| publisher.remove(removal)));
-    outcomes.extend(plan.refreshes.iter().map(|refresh| publisher.refresh(refresh)));
-    outcomes.extend(plan.additions.iter().map(|addition| publisher.add(addition)));
+    outcomes.extend(
+        plan.removals
+            .iter()
+            .map(|removal| publisher.remove(removal)),
+    );
+    outcomes.extend(
+        plan.refreshes
+            .iter()
+            .map(|refresh| publisher.refresh(refresh)),
+    );
+    outcomes.extend(
+        plan.additions
+            .iter()
+            .map(|addition| publisher.add(addition)),
+    );
     outcomes
 }
 
@@ -169,9 +194,7 @@ fn warnings(discovery: &Discovery, skips: &Skips) -> Vec<String> {
             "the transcript listing was incomplete, so no orphaned entries were removed".to_string(),
         );
     } else if discovery.transcripts.seen.is_empty() && !discovery.desktop.copies.is_empty() {
-        warnings.push(
-            "no transcripts were found, so no orphaned entries were removed".to_string(),
-        );
+        warnings.push("no transcripts were found, so no orphaned entries were removed".to_string());
     }
     if skips.any_incomplete_input() {
         warnings.push(

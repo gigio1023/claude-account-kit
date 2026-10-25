@@ -37,7 +37,8 @@ pub(super) struct LedgerRecord {
     /// RFC 3339 UTC time of the write.
     pub(super) at: String,
     pub(super) action: LedgerAction,
-    /// `<accountUuid>/<orgUuid>/local_<uuid>.json` under `claude-code-sessions`.
+    /// `<accountUuid>/<orgUuid>/local_<uuid>.json` for the primary root;
+    /// additional roots prefix that path with `profiles/<root SHA-256>/`.
     pub(super) relative_path: String,
     pub(super) cli_session_id: String,
     /// SHA-256 of the bytes written, or of the bytes removed.
@@ -112,7 +113,11 @@ pub(super) fn load(ledger_path: &Path, legacy_path: &Path) -> Result<Ledger> {
 ///
 /// The import is linked into place without replacing, so a ledger that
 /// appeared in the meantime is never overwritten.
-pub(super) fn persist_import(ledger: &mut Ledger, ledger_path: &Path, state_dir: &Path) -> Result<()> {
+pub(super) fn persist_import(
+    ledger: &mut Ledger,
+    ledger_path: &Path,
+    state_dir: &Path,
+) -> Result<()> {
     if ledger.pending_import.is_empty() {
         return Ok(());
     }
@@ -121,8 +126,12 @@ pub(super) fn persist_import(ledger: &mut Ledger, ledger_path: &Path, state_dir:
         text.push_str(&serde_json::to_string(record)?);
         text.push('\n');
     }
-    let staged = StagedFile::write(state_dir, text.as_bytes())
-        .with_context(|| format!("failed to stage the ledger import in {}", state_dir.display()))?;
+    let staged = StagedFile::write(state_dir, text.as_bytes()).with_context(|| {
+        format!(
+            "failed to stage the ledger import in {}",
+            state_dir.display()
+        )
+    })?;
     match staged.link_new(ledger_path) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
@@ -156,7 +165,9 @@ pub(super) fn append(ledger_path: &Path, record: &LedgerRecord) -> io::Result<()
     if let Some(before) = before
         && !platform::same_file(&before, &file.metadata()?)
     {
-        return Err(bounded::invalid("the ledger changed while it was being opened"));
+        return Err(bounded::invalid(
+            "the ledger changed while it was being opened",
+        ));
     }
     let mut line = serde_json::to_string(record).map_err(io::Error::other)?;
     line.push('\n');

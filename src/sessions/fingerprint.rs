@@ -15,7 +15,7 @@ use super::desktop::sha256_hex;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 /// The fingerprint a full run started from, and when that run happened.
@@ -27,15 +27,18 @@ pub(super) struct StoredFingerprint {
 }
 
 /// Digest the partition directories, the project directories, and their times.
-pub(super) fn compute(sessions_root: &Path, projects_root: &Path) -> String {
+pub(super) fn compute(desktop_roots: &[PathBuf], projects_root: &Path) -> String {
     let mut lines = String::new();
-    describe(&mut lines, "S", sessions_root, "");
-    for account in listing(&mut lines, sessions_root) {
-        let account_name = name(&account);
-        describe(&mut lines, "A", &account, &account_name);
-        for partition in listing(&mut lines, &account) {
-            let label = format!("{account_name}/{}", name(&partition));
-            describe(&mut lines, "P", &partition, &label);
+    for root in desktop_roots {
+        let sessions_root: PathBuf = root.join("claude-code-sessions");
+        describe(&mut lines, "S", &sessions_root, &root.to_string_lossy());
+        for account in listing(&mut lines, &sessions_root) {
+            let account_name = name(&account);
+            describe(&mut lines, "A", &account, &account_name);
+            for partition in listing(&mut lines, &account) {
+                let label = format!("{account_name}/{}", name(&partition));
+                describe(&mut lines, "P", &partition, &label);
+            }
         }
     }
     describe(&mut lines, "R", projects_root, "");

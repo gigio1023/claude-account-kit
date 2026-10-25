@@ -109,10 +109,12 @@ pub(crate) fn run(ctx: &AppContext, command: SessionsCommand) -> Result<()> {
             json,
             background,
             desktop_root,
+            additional_desktop_root,
             projects_root,
         } => {
             let paths =
-                SessionPaths::resolve(ctx, desktop_root.as_deref(), projects_root.as_deref())?;
+                SessionPaths::resolve(ctx, desktop_root.as_deref(), projects_root.as_deref())?
+                    .with_additional_roots(&additional_desktop_root)?;
             if background {
                 run_background(&paths);
                 return Ok(());
@@ -123,14 +125,21 @@ pub(crate) fn run(ctx: &AppContext, command: SessionsCommand) -> Result<()> {
         SessionsCommand::Background { action } => {
             let paths = SessionPaths::resolve(ctx, None, None)?;
             match action {
-                BackgroundAction::On { interval } => turn_on(&paths, interval),
+                BackgroundAction::On {
+                    interval,
+                    additional_desktop_root,
+                } => turn_on(
+                    &paths.with_additional_roots(&additional_desktop_root)?,
+                    interval,
+                ),
                 BackgroundAction::Off => turn_off(&paths),
-                BackgroundAction::Plist { interval } => {
+                BackgroundAction::Plist {
+                    interval,
+                    additional_desktop_root,
+                } => {
+                    let paths = paths.with_additional_roots(&additional_desktop_root)?;
                     let program = background::current_program()?;
-                    print!(
-                        "{}",
-                        background::render_plist(&program, interval, &paths.sessions_root())
-                    );
+                    print!("{}", background::render_plist(&program, interval, &paths));
                     Ok(())
                 }
             }
