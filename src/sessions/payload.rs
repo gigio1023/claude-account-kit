@@ -35,6 +35,13 @@ const HISTORY_FIELDS: [&str; 19] = [
     "lineageDetached",
 ];
 
+/// Fields that say which session started this one: `spawnedFrom` names the
+/// parent and `startChain` the first session of the chain. Desktop builds
+/// the parent and child links from them. A conversation's parent never
+/// changes, so the newest copy that has them supplies them, and a copy that
+/// lacks them keeps the value it already has.
+pub(super) const LINK_FIELDS: [&str; 2] = ["spawnedFrom", "startChain"];
+
 /// Fields a refresh takes from the canonical payload: which transcript to
 /// resume, where it runs, and when it was last active.
 const POINTER_FIELDS: [&str; 4] = ["cliSessionId", "cwd", "originCwd", "lastActivityAt"];
@@ -60,7 +67,37 @@ pub(super) fn rebase(
             }
         }
     }
+    for key in LINK_FIELDS {
+        if let Some(value) = canonical.get(key) {
+            payload.insert(key.to_string(), value.clone());
+        }
+    }
     payload
+}
+
+/// Whether `copy` lacks a link field `canonical` carries, or holds another value.
+pub(super) fn missing_links(copy: &Map<String, Value>, canonical: &Map<String, Value>) -> bool {
+    LINK_FIELDS.iter().any(|key| {
+        canonical
+            .get(*key)
+            .is_some_and(|value| copy.get(*key) != Some(value))
+    })
+}
+
+/// Add the link fields of the newest copy that has them, where `payload` lacks them.
+pub(super) fn fill_links<'a>(
+    payload: &mut Map<String, Value>,
+    copies_newest_first: impl IntoIterator<Item = &'a Map<String, Value>>,
+) {
+    for copy in copies_newest_first {
+        for key in LINK_FIELDS {
+            if !payload.contains_key(key)
+                && let Some(value) = copy.get(key)
+            {
+                payload.insert(key.to_string(), value.clone());
+            }
+        }
+    }
 }
 
 /// Build the payload to publish from a Desktop wrapper.
@@ -90,7 +127,7 @@ pub(super) fn from_wrapper(
         title: source.get("title").and_then(Value::as_str),
     });
     for (key, value) in source {
-        if HISTORY_FIELDS.contains(&key.as_str()) {
+        if HISTORY_FIELDS.contains(&key.as_str()) || LINK_FIELDS.contains(&key.as_str()) {
             payload.insert(key.clone(), value.clone());
         }
     }

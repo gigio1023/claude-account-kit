@@ -183,6 +183,11 @@ fn plan_desktop_session(
         return;
     };
     plan.counts.sessions += 1;
+    let mut canonical_payload = canonical.payload.clone();
+    payload::fill_links(
+        &mut canonical_payload,
+        copies.iter().map(|copy| &copy.payload),
+    );
 
     let mut refreshed = false;
     for (index, partition) in input.desktop.partitions.iter().enumerate() {
@@ -195,7 +200,24 @@ fn plan_desktop_session(
         };
         let held = copies.iter().find(|copy| copy.partition == index);
         let owned = |copy: &WrapperCopy| input.ledger.owns(&target.ledger_key, &copy.sha256);
-        if held.is_some_and(|copy| copy.fields.cli_session_id.as_ref() == Some(&canonical.cli)) {
+        let current =
+            held.filter(|copy| copy.fields.cli_session_id.as_ref() == Some(&canonical.cli));
+        if let Some(copy) = current {
+            if owned(copy)
+                && payload::missing_links(&copy.payload, &canonical_payload)
+                && blocked_reason(input, index, &tombstone_names).is_none()
+            {
+                refreshed = true;
+                plan.refreshes.push(Refresh {
+                    owned: true,
+                    target,
+                    cli: canonical.cli.clone(),
+                    transcript: canonical.transcript.clone(),
+                    payload: payload::rebase(&copy.payload, &canonical_payload),
+                    expected_sha256: copy.sha256.clone(),
+                });
+                continue;
+            }
             plan.counts.already_registered += 1;
             continue;
         }
@@ -208,7 +230,7 @@ fn plan_desktop_session(
                 target,
                 cli: canonical.cli.clone(),
                 transcript: canonical.transcript.clone(),
-                payload: canonical.payload.clone(),
+                payload: canonical_payload.clone(),
             }),
             Some(copy) if owned(copy) || continues(canonical.copy, copy) => {
                 refreshed = true;
@@ -217,7 +239,7 @@ fn plan_desktop_session(
                     target,
                     cli: canonical.cli.clone(),
                     transcript: canonical.transcript.clone(),
-                    payload: payload::rebase(&copy.payload, &canonical.payload),
+                    payload: payload::rebase(&copy.payload, &canonical_payload),
                     expected_sha256: copy.sha256.clone(),
                 });
             }
