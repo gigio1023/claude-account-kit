@@ -17,7 +17,12 @@ use std::path::{Path, PathBuf};
 /// Desktop allows 10 MiB wrapper records; connector metadata can fill them.
 pub(super) const MAX_METADATA: u64 = 10 * 1024 * 1024;
 /// One allowance for the whole run, across all partitions and transcripts.
-const MAX_READ_BYTES: u64 = 256 * 1024 * 1024;
+///
+/// Desktop 5 writes about 400 KiB per session record it has opened. Nine
+/// profiles held 345 MiB of records on 2026-11-14, and the earlier 256 MiB
+/// allowance ran out before the later profiles were read, so their sessions
+/// were never shared.
+const MAX_READ_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// The start of a transcript, where its first `cwd` and title records are.
 const HEAD_BYTES: u64 = 32 * 1024;
 /// The end of a transcript, where its latest title and timestamps are.
