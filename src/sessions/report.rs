@@ -37,15 +37,22 @@ pub(super) struct Changes {
     /// Copies moved to the conversation's newest transcript, or given its
     /// parent link.
     pub(super) refresh: u64,
-    /// Copies already on the newest transcript whose `lastActivityAt` alone
-    /// was raised to the conversation's latest activity.
+    /// Copies already on the newest transcript whose `lastActivityAt` was
+    /// raised to the conversation's latest activity.
     pub(super) activity: u64,
+    /// Copies given the conversation's latest name. One write can change the
+    /// activity time, the title, and the archive flag together, and counts
+    /// under each.
+    pub(super) title: u64,
+    /// Archived copies listed again because the conversation went on after
+    /// they were archived.
+    pub(super) restore: u64,
     pub(super) remove: u64,
 }
 
 impl Changes {
     pub(super) fn total(self) -> u64 {
-        self.add + self.refresh + self.activity + self.remove
+        self.add + self.refresh + self.activity + self.title + self.restore + self.remove
     }
 }
 
@@ -78,8 +85,14 @@ pub(super) fn print(report: &RunReport) {
     if report.status == RunStatus::Preview {
         let planned = report.planned;
         println!(
-            "would add {}, refresh {}, update activity time of {}, remove {}; nothing was written",
-            planned.add, planned.refresh, planned.activity, planned.remove
+            "would add {}, refresh {}, update activity time of {}, update title of {}, \
+             restore {} archived, remove {}; nothing was written",
+            planned.add,
+            planned.refresh,
+            planned.activity,
+            planned.title,
+            planned.restore,
+            planned.remove
         );
     } else {
         print_changes(report.applied);
@@ -104,8 +117,14 @@ pub(super) fn print_overview(report: &RunReport) {
 
 pub(super) fn print_changes(applied: Changes) {
     println!(
-        "added {}, refreshed {}, updated activity time of {}, removed {}",
-        applied.add, applied.refresh, applied.activity, applied.remove
+        "added {}, refreshed {}, updated activity time of {}, updated title of {}, \
+         restored {} archived, removed {}",
+        applied.add,
+        applied.refresh,
+        applied.activity,
+        applied.title,
+        applied.restore,
+        applied.remove
     );
 }
 
@@ -117,6 +136,12 @@ pub(super) fn print_details(report: &RunReport) {
             "left alone: {} copy(ies) on an older transcript and {} orphaned copy(ies), \
              because Desktop wrote or changed them",
             counts.diverged_not_owned, counts.orphan_not_owned
+        );
+    }
+    if counts.title_conflicts > 0 {
+        println!(
+            "left alone: the titles of {} conversation(s) renamed differently in two apps",
+            counts.title_conflicts
         );
     }
     if !report.skipped.is_empty() {

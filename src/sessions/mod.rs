@@ -29,6 +29,7 @@ mod staging;
 mod state;
 mod sync;
 mod timestamp;
+mod title;
 mod transcripts;
 
 use crate::cli::{BackgroundAction, SessionsCommand};
@@ -50,8 +51,12 @@ pub(crate) struct SessionsSummary {
     pub(crate) last_run_at: Option<String>,
     pub(crate) added: u64,
     pub(crate) refreshed: u64,
-    /// Copies whose `lastActivityAt` alone was raised.
+    /// Copies whose `lastActivityAt` was raised.
     pub(crate) activity_updated: u64,
+    /// Copies given the conversation's latest name.
+    pub(crate) title_updated: u64,
+    /// Archived copies listed again.
+    pub(crate) restored: u64,
     pub(crate) removed: u64,
     /// The last sync changed entries that Desktop shows only after an
     /// account switch or a restart.
@@ -78,6 +83,8 @@ pub(crate) fn summary(ctx: &AppContext) -> Result<SessionsSummary> {
         added: applied.add,
         refreshed: applied.refresh,
         activity_updated: applied.activity,
+        title_updated: applied.title,
+        restored: applied.restore,
         removed: applied.remove,
         refresh_needed: last_run.is_some_and(|report| report.refresh_needed),
     })
@@ -216,6 +223,8 @@ fn print_status(ctx: &AppContext, json: bool) -> Result<()> {
         add: summary.added,
         refresh: summary.refreshed,
         activity: summary.activity_updated,
+        title: summary.title_updated,
+        restore: summary.restored,
         remove: summary.removed,
     });
     if let Some(report) = &last_run {

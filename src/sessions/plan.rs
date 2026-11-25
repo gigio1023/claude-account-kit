@@ -12,13 +12,24 @@
 //!   it since, or when the canonical copy lists the copy's transcript as an
 //!   earlier one. Desktop rewrites a copy when an app opens or quits, so
 //!   lineage, not ownership, proves that nobody continued the copy.
-//! - A copy that already points at the canonical transcript but shows older
-//!   activity takes the conversation's latest activity time (an activity
-//!   update) and nothing else, whoever wrote it. The latest activity is the
-//!   later of the canonical copy's `lastActivityAt` and the transcript's last
-//!   record. Desktop sorts its list by that field, so without it a
-//!   conversation continued in one account stays buried in the others.
-//!   Archived and hidden copies keep theirs.
+//! - A copy that already points at the canonical transcript gets a field
+//!   update, whoever wrote it, that changes only these fields:
+//!   - `lastActivityAt` rises to the conversation's latest activity, the later
+//!     of the canonical copy's value and the transcript's last record. Desktop
+//!     sorts its list by that field, so without it a conversation continued in
+//!     one account stays buried in the others.
+//!   - `title`, with `titleSource`, takes the name [`title::decide`] picks, so
+//!     a rename in one app reaches the others.
+//!   - `isArchived` turns false when the copy was archived before the
+//!     conversation's latest activity: Desktop archives a copy whose own
+//!     activity time is older than its inactivity limit, and before the
+//!     activity update a copy in one app aged while the conversation went on in
+//!     another. An archive after the latest activity is a person's choice and
+//!     stays. The archive time is `archiveSetAtMs`, or the file's modification
+//!     time when Desktop wrote none; Desktop rewrites the file on any later
+//!     change, so that time is never earlier than the archive.
+//!
+//!   Hidden copies, and archived copies that stay archived, keep every field.
 //! - When no transcript of the conversation exists any more, the copies this
 //!   tool owns are deleted (a removal), and Desktop's own copies are left.
 //! - An entry this tool named after a transcript (`local_<transcript id>`) is
@@ -33,6 +44,7 @@ use super::ids::{SessionId, WrapperId};
 use super::ledger::Ledger;
 use super::payload;
 use super::skips::{Skip, Skips};
+use super::title::{self, TitleDecision, TitleTarget};
 use super::transcripts::{CliTranscript, TranscriptInventory};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -71,13 +83,23 @@ pub(super) struct Refresh {
     /// Whether this tool wrote the copy. A copy Desktop wrote is refreshed
     /// without becoming the tool's, so it is never removed as an orphan.
     pub(super) owned: bool,
+    /// Which of the fields a field update owns this write changes.
+    pub(super) fields: FieldChanges,
 }
 
 /// A change to an existing copy: a [`Refresh`] that moves it to the canonical
-/// transcript, or an activity update that raises only its `lastActivityAt`.
-/// An activity update of a copy Desktop wrote keeps `owned` false, so the
-/// copy never becomes the tool's to remove.
-pub(super) type ActivityUpdate = Refresh;
+/// transcript, or a field update that changes only the fields in
+/// [`FieldChanges`]. A field update of a copy Desktop wrote keeps `owned`
+/// false, so the copy never becomes the tool's to remove.
+pub(super) type FieldUpdate = Refresh;
+
+/// The fields a write raises, renames, or restores, counted in the report.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct FieldChanges {
+    pub(super) activity: bool,
+    pub(super) title: bool,
+    pub(super) restore: bool,
+}
 
 /// A tool-owned copy of a conversation whose transcripts are all gone, or any
 /// copy of a duplicate entry.
@@ -107,12 +129,15 @@ pub(super) struct PlanCounts {
     pub(super) orphan_not_owned: u64,
     /// Entries named after a transcript that another conversation lists.
     pub(super) duplicate_sessions: u64,
+    /// Conversations whose copies hold different names set in Desktop, none
+    /// of them provably the latest, so every copy kept its title.
+    pub(super) title_conflicts: u64,
 }
 
 pub(super) struct Plan {
     pub(super) additions: Vec<Addition>,
     pub(super) refreshes: Vec<Refresh>,
-    pub(super) activity_updates: Vec<ActivityUpdate>,
+    pub(super) updates: Vec<FieldUpdate>,
     pub(super) removals: Vec<Removal>,
     pub(super) counts: PlanCounts,
 }
@@ -137,7 +162,7 @@ pub(super) fn build(input: &PlanInput<'_>, skips: &mut Skips) -> Plan {
     let mut plan = Plan {
         additions: Vec::new(),
         refreshes: Vec::new(),
-        activity_updates: Vec::new(),
+        updates: Vec::new(),
         removals: Vec::new(),
         counts: PlanCounts {
             partitions: input.desktop.partitions.len() as u64,
@@ -206,10 +231,23 @@ fn plan_desktop_session(
     );
     let activity = latest_activity(input, canonical);
     payload::set_activity(&mut canonical_payload, activity);
+    let tail_titles = input.transcripts.tail_titles.get(&canonical.cli);
+    let title = match title::decide(copies, tail_titles.map_or(&[], Vec::as_slice)) {
+        TitleDecision::Set(target) => Some(target),
+        TitleDecision::Conflict => {
+            plan.counts.title_conflicts += 1;
+            None
+        }
+        TitleDecision::Keep => None,
+    };
+    if let Some(target) = &title {
+        title::apply(&mut canonical_payload, target);
+    }
     let canonical = Canonical {
         source: canonical,
         payload: canonical_payload,
         activity,
+        title,
     };
 
     let mut refreshed = false;
@@ -242,13 +280,19 @@ fn plan_desktop_session(
             }),
             Some(copy) if owned(copy) || continues(canonical.source.copy, copy) => {
                 refreshed = true;
+                let mut rebased = payload::rebase(&copy.payload, &canonical.payload);
+                let retitled = retitle(&mut rebased, copy, &canonical);
                 plan.refreshes.push(Refresh {
                     owned: owned(copy),
                     target,
                     cli: canonical.source.cli.clone(),
                     transcript: canonical.source.transcript.clone(),
-                    payload: payload::rebase(&copy.payload, &canonical.payload),
+                    payload: rebased,
                     expected_sha256: copy.sha256.clone(),
+                    fields: FieldChanges {
+                        title: retitled,
+                        ..FieldChanges::default()
+                    },
                 });
             }
             Some(_) => plan.counts.diverged_not_owned += 1,
@@ -266,14 +310,34 @@ struct Canonical<'s, 'a> {
     payload: Map<String, Value>,
     /// The conversation's latest activity, see [`latest_activity`].
     activity: i64,
+    /// The title every listed copy should show, when one is decided.
+    title: Option<TitleTarget>,
+}
+
+/// Give a listed copy's new payload the conversation's title, and say
+/// whether that changed it. Archived and hidden copies keep theirs.
+fn retitle(
+    payload: &mut Map<String, Value>,
+    copy: &WrapperCopy,
+    canonical: &Canonical<'_, '_>,
+) -> bool {
+    let Some(target) = &canonical.title else {
+        return false;
+    };
+    if copy.fields.archived_or_hidden() || !title::differs(payload, target) {
+        return false;
+    }
+    title::apply(payload, target);
+    true
 }
 
 /// Plan a copy that already points at the canonical transcript, and return
 /// whether it is refreshed.
 ///
 /// A copy this tool owns that lacks a link field is refreshed. Otherwise a
-/// listed, local copy with older activity gets an activity update, whoever
-/// wrote it.
+/// local copy that is listed, or archived before the latest activity, gets a
+/// field update when its activity time, title, or archive flag is behind,
+/// whoever wrote it.
 fn plan_current(
     input: &PlanInput<'_>,
     index: usize,
@@ -287,23 +351,46 @@ fn plan_current(
     let blocked = blocked_reason(input, index, &target.tombstone_names);
     let source = canonical.source;
     if owned && payload::missing_links(&copy.payload, &canonical.payload) && blocked.is_none() {
+        let mut rebased = payload::rebase(&copy.payload, &canonical.payload);
+        let retitled = retitle(&mut rebased, copy, canonical);
         plan.refreshes.push(Refresh {
             owned: true,
             target,
             cli: source.cli.clone(),
             transcript: source.transcript.clone(),
-            payload: payload::rebase(&copy.payload, &canonical.payload),
+            payload: rebased,
             expected_sha256: copy.sha256.clone(),
+            fields: FieldChanges {
+                title: retitled,
+                ..FieldChanges::default()
+            },
         });
         return true;
     }
-    let behind = !copy.fields.archived_or_hidden
-        && !copy.fields.remote
-        && copy
-            .fields
+    let fields = &copy.fields;
+    let local = !fields.remote && !fields.hidden;
+    let restore = local && fields.archived && archived_before(copy, canonical.activity);
+    let listed = local && (!fields.archived || restore);
+    let behind = listed
+        && fields
             .last_activity_at
             .is_none_or(|own| own < canonical.activity);
-    if !behind {
+    let mut updated = copy.payload.clone();
+    if restore {
+        updated.insert("isArchived".to_string(), Value::Bool(false));
+    }
+    if behind {
+        payload::set_activity(&mut updated, canonical.activity);
+    }
+    let retitled = listed
+        && canonical.title.as_ref().is_some_and(|target| {
+            let differs = title::differs(&updated, target);
+            if differs {
+                title::apply(&mut updated, target);
+            }
+            differs
+        });
+    if !(restore || behind || retitled) {
         plan.counts.already_registered += 1;
         return false;
     }
@@ -311,17 +398,33 @@ fn plan_current(
         skips.add(reason);
         return false;
     }
-    let mut updated = copy.payload.clone();
-    payload::set_activity(&mut updated, canonical.activity);
-    plan.activity_updates.push(ActivityUpdate {
+    plan.updates.push(FieldUpdate {
         owned,
         target,
         cli: source.cli.clone(),
         transcript: source.transcript.clone(),
         payload: updated,
         expected_sha256: copy.sha256.clone(),
+        fields: FieldChanges {
+            activity: behind,
+            title: retitled,
+            restore,
+        },
     });
     false
+}
+
+/// Whether an archived copy was archived before `activity`.
+///
+/// The archive time is `archiveSetAtMs`, or else the file's modification
+/// time, which is never earlier than the archive. A copy with neither stays
+/// archived.
+fn archived_before(copy: &WrapperCopy, activity: i64) -> bool {
+    let archived_at = copy
+        .fields
+        .archive_set_at
+        .or((copy.modified_ms > 0).then_some(copy.modified_ms));
+    archived_at.is_some_and(|archived_at| archived_at < activity)
 }
 
 /// The conversation's latest activity: the canonical copy's `lastActivityAt`
@@ -437,7 +540,7 @@ fn plan_cli_session(
 /// Check one copy as a canonical source, or say why it cannot be one.
 fn source<'a>(input: &PlanInput<'_>, copy: &'a WrapperCopy) -> Result<Source<'a>, Skip> {
     let cli = copy.fields.cli_session_id.clone().ok_or(Skip::MissingCliId)?;
-    if copy.fields.archived_or_hidden {
+    if copy.fields.archived_or_hidden() {
         return Err(Skip::ArchivedOrHiddenSource);
     }
     if copy.fields.remote {
