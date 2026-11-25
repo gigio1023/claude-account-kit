@@ -29,18 +29,23 @@ impl RunStatus {
     }
 }
 
-/// Wrapper files added, refreshed, and removed.
+/// Wrapper files added, refreshed, updated, and removed.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct Changes {
     pub(super) add: u64,
+    /// Copies moved to the conversation's newest transcript, or given its
+    /// parent link.
     pub(super) refresh: u64,
+    /// Copies already on the newest transcript whose `lastActivityAt` alone
+    /// was raised to the conversation's latest activity.
+    pub(super) activity: u64,
     pub(super) remove: u64,
 }
 
 impl Changes {
     pub(super) fn total(self) -> u64 {
-        self.add + self.refresh + self.remove
+        self.add + self.refresh + self.activity + self.remove
     }
 }
 
@@ -73,8 +78,8 @@ pub(super) fn print(report: &RunReport) {
     if report.status == RunStatus::Preview {
         let planned = report.planned;
         println!(
-            "would add {}, refresh {}, remove {}; nothing was written",
-            planned.add, planned.refresh, planned.remove
+            "would add {}, refresh {}, update activity time of {}, remove {}; nothing was written",
+            planned.add, planned.refresh, planned.activity, planned.remove
         );
     } else {
         print_changes(report.applied);
@@ -99,8 +104,8 @@ pub(super) fn print_overview(report: &RunReport) {
 
 pub(super) fn print_changes(applied: Changes) {
     println!(
-        "added {}, refreshed {}, removed {}",
-        applied.add, applied.refresh, applied.remove
+        "added {}, refreshed {}, updated activity time of {}, removed {}",
+        applied.add, applied.refresh, applied.activity, applied.remove
     );
 }
 

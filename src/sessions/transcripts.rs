@@ -44,6 +44,9 @@ pub(super) struct TranscriptInventory {
     pub(super) seen: BTreeSet<SessionId>,
     /// False when a listing failed, so an absent id may still exist.
     pub(super) complete: bool,
+    /// The latest record timestamp of each transcript a Desktop entry
+    /// currently points at, in Unix milliseconds. See [`read_last_records`].
+    pub(super) last_record_ms: BTreeMap<SessionId, i64>,
 }
 
 /// What a transcript without a Desktop entry says about itself.
@@ -86,6 +89,7 @@ pub(super) fn inventory(root: &Path, skips: &mut Skips) -> TranscriptInventory {
         files: BTreeMap::new(),
         seen: BTreeSet::new(),
         complete: bounded::is_real_dir(root),
+        last_record_ms: BTreeMap::new(),
     };
     if !inventory.complete {
         return inventory;
@@ -175,6 +179,43 @@ pub(super) fn read_cli_only(
         });
     }
     result
+}
+
+/// Read when each of `ids` last had a record written, from its tail window.
+///
+/// The time comes from the records' own `timestamp` fields, not from the
+/// file's modification time. Claude Code appends untimed bookkeeping records
+/// such as `last-prompt` and `cost-state` when a conversation is only opened,
+/// so the file time moves without any activity: on 2026-11-25, 861 of 1,112
+/// transcripts were modified more than a day after their last timed record.
+/// A time after `now_ms` is ignored, so a wrong clock cannot pin a
+/// conversation to the top of every list.
+pub(super) fn read_last_records(
+    inventory: &mut TranscriptInventory,
+    ids: &BTreeSet<SessionId>,
+    now_ms: i64,
+    budget: &mut ReadBudget,
+    skips: &mut Skips,
+) {
+    for id in ids {
+        let Some([path]) = inventory.files.get(id).map(Vec::as_slice) else {
+            continue;
+        };
+        let Ok(tail) = bounded::read_tail(path, budget) else {
+            skips.add(Skip::TranscriptUnreadable);
+            continue;
+        };
+        let latest = tail
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| {
+                timestamp::milliseconds(json_scan::scalar_fields(line, &["timestamp"]).get("timestamp"))
+            })
+            .filter(|time| *time <= now_ms)
+            .max();
+        if let Some(latest) = latest {
+            inventory.last_record_ms.insert(id.clone(), latest);
+        }
+    }
 }
 
 /// Whether a JSON field set marks a session that ran away from this machine.
