@@ -8,7 +8,7 @@
 use super::bounded::{self, ReadBudget};
 use super::desktop::{self, DesktopScan};
 use super::fingerprint::{self, StoredFingerprint};
-use super::ledger::{self, Ledger, LedgerAction};
+use super::ledger::{self, Ledger};
 use super::lock::RunLock;
 use super::paths::SessionPaths;
 use super::plan::{self, Plan, PlanInput};
@@ -137,7 +137,16 @@ fn discover(paths: &SessionPaths, skips: &mut Skips) -> Result<Discovery> {
             desktop.complete = false;
         }
     }
-    let transcripts = transcripts::inventory(&paths.projects_root, skips);
+    let mut transcripts = transcripts::inventory(&paths.projects_root, skips);
+    // A record written in the current second is not yet past the clock.
+    let now_ms = (now_epoch() + 1) * 1000;
+    transcripts::read_last_records(
+        &mut transcripts,
+        &desktop.current_transcript_ids(),
+        now_ms,
+        &mut budget,
+        skips,
+    );
     let known = desktop.known_transcript_ids();
     let cli_only = transcripts::read_cli_only(&transcripts, &known, &mut budget, skips);
     Ok(Discovery {
@@ -148,7 +157,16 @@ fn discover(paths: &SessionPaths, skips: &mut Skips) -> Result<Discovery> {
     })
 }
 
-fn publish(paths: &SessionPaths, ledger: &mut Ledger, plan: &Plan) -> Vec<Outcome> {
+/// Which kind of planned change an outcome belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChangeKind {
+    Add,
+    Refresh,
+    Activity,
+    Remove,
+}
+
+fn publish(paths: &SessionPaths, ledger: &mut Ledger, plan: &Plan) -> Vec<(ChangeKind, Outcome)> {
     let desktop_roots = paths.desktop_roots();
     let ledger_path = paths.ledger();
     let mut publisher = Publisher {
@@ -160,17 +178,25 @@ fn publish(paths: &SessionPaths, ledger: &mut Ledger, plan: &Plan) -> Vec<Outcom
     outcomes.extend(
         plan.removals
             .iter()
-            .map(|removal| publisher.remove(removal)),
+            .map(|removal| (ChangeKind::Remove, publisher.remove(removal))),
     );
     outcomes.extend(
         plan.refreshes
             .iter()
-            .map(|refresh| publisher.refresh(refresh)),
+            .map(|refresh| (ChangeKind::Refresh, publisher.refresh(refresh))),
+    );
+    // An activity update writes the same way as a refresh: the file must
+    // still hold the bytes the plan read, and only a copy the tool owns is
+    // recorded in the ledger.
+    outcomes.extend(
+        plan.activity_updates
+            .iter()
+            .map(|update| (ChangeKind::Activity, publisher.refresh(update))),
     );
     outcomes.extend(
         plan.additions
             .iter()
-            .map(|addition| publisher.add(addition)),
+            .map(|addition| (ChangeKind::Add, publisher.add(addition))),
     );
     outcomes
 }
@@ -209,21 +235,28 @@ fn summarize(
     plan: &Plan,
     skips: &Skips,
     warnings: Vec<String>,
-    outcomes: &[Outcome],
+    outcomes: &[(ChangeKind, Outcome)],
     started: Instant,
 ) -> RunReport {
     let mut publication: BTreeMap<String, u64> = BTreeMap::new();
     let mut applied = Changes::default();
-    for outcome in outcomes {
-        *publication.entry(outcome.as_str().to_string()).or_insert(0) += 1;
-        match outcome.completed() {
-            Some(LedgerAction::Created) => applied.add += 1,
-            Some(LedgerAction::Refreshed) => applied.refresh += 1,
-            Some(LedgerAction::Removed) => applied.remove += 1,
-            None => {}
+    for (kind, outcome) in outcomes {
+        let name = match kind {
+            ChangeKind::Activity => format!("activity_{}", outcome.as_str()),
+            _ => outcome.as_str().to_string(),
+        };
+        *publication.entry(name).or_insert(0) += 1;
+        if outcome.completed().is_none() {
+            continue;
+        }
+        match kind {
+            ChangeKind::Add => applied.add += 1,
+            ChangeKind::Refresh => applied.refresh += 1,
+            ChangeKind::Activity => applied.activity += 1,
+            ChangeKind::Remove => applied.remove += 1,
         }
     }
-    let failed = outcomes.iter().any(|outcome| outcome.is_error());
+    let failed = outcomes.iter().any(|(_, outcome)| outcome.is_error());
     RunReport {
         status: if failed { RunStatus::Error } else { RunStatus::Ok },
         checked_at: timestamp::format_utc(now_epoch()),
@@ -232,6 +265,7 @@ fn summarize(
         planned: Changes {
             add: plan.additions.len() as u64,
             refresh: plan.refreshes.len() as u64,
+            activity: plan.activity_updates.len() as u64,
             remove: plan.removals.len() as u64,
         },
         applied,

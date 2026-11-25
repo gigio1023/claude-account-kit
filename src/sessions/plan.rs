@@ -12,6 +12,13 @@
 //!   it since, or when the canonical copy lists the copy's transcript as an
 //!   earlier one. Desktop rewrites a copy when an app opens or quits, so
 //!   lineage, not ownership, proves that nobody continued the copy.
+//! - A copy that already points at the canonical transcript but shows older
+//!   activity takes the conversation's latest activity time (an activity
+//!   update) and nothing else, whoever wrote it. The latest activity is the
+//!   later of the canonical copy's `lastActivityAt` and the transcript's last
+//!   record. Desktop sorts its list by that field, so without it a
+//!   conversation continued in one account stays buried in the others.
+//!   Archived and hidden copies keep theirs.
 //! - When no transcript of the conversation exists any more, the copies this
 //!   tool owns are deleted (a removal), and Desktop's own copies are left.
 //! - An entry this tool named after a transcript (`local_<transcript id>`) is
@@ -66,6 +73,12 @@ pub(super) struct Refresh {
     pub(super) owned: bool,
 }
 
+/// A change to an existing copy: a [`Refresh`] that moves it to the canonical
+/// transcript, or an activity update that raises only its `lastActivityAt`.
+/// An activity update of a copy Desktop wrote keeps `owned` false, so the
+/// copy never becomes the tool's to remove.
+pub(super) type ActivityUpdate = Refresh;
+
 /// A tool-owned copy of a conversation whose transcripts are all gone, or any
 /// copy of a duplicate entry.
 pub(super) struct Removal {
@@ -81,7 +94,8 @@ pub(super) struct PlanCounts {
     pub(super) partitions: u64,
     /// Conversations with a usable source, from Desktop or from the CLI.
     pub(super) sessions: u64,
-    /// Partition copies that already point at the canonical transcript.
+    /// Partition copies that already point at the canonical transcript and
+    /// need no change.
     pub(super) already_registered: u64,
     /// Conversations with at least one copy to refresh.
     pub(super) refresh_sessions: u64,
@@ -98,6 +112,7 @@ pub(super) struct PlanCounts {
 pub(super) struct Plan {
     pub(super) additions: Vec<Addition>,
     pub(super) refreshes: Vec<Refresh>,
+    pub(super) activity_updates: Vec<ActivityUpdate>,
     pub(super) removals: Vec<Removal>,
     pub(super) counts: PlanCounts,
 }
@@ -122,6 +137,7 @@ pub(super) fn build(input: &PlanInput<'_>, skips: &mut Skips) -> Plan {
     let mut plan = Plan {
         additions: Vec::new(),
         refreshes: Vec::new(),
+        activity_updates: Vec::new(),
         removals: Vec::new(),
         counts: PlanCounts {
             partitions: input.desktop.partitions.len() as u64,
@@ -188,6 +204,13 @@ fn plan_desktop_session(
         &mut canonical_payload,
         copies.iter().map(|copy| &copy.payload),
     );
+    let activity = latest_activity(input, canonical);
+    payload::set_activity(&mut canonical_payload, activity);
+    let canonical = Canonical {
+        source: canonical,
+        payload: canonical_payload,
+        activity,
+    };
 
     let mut refreshed = false;
     for (index, partition) in input.desktop.partitions.iter().enumerate() {
@@ -200,25 +223,10 @@ fn plan_desktop_session(
         };
         let held = copies.iter().find(|copy| copy.partition == index);
         let owned = |copy: &WrapperCopy| input.ledger.owns(&target.ledger_key, &copy.sha256);
-        let current =
-            held.filter(|copy| copy.fields.cli_session_id.as_ref() == Some(&canonical.cli));
+        let current = held
+            .filter(|copy| copy.fields.cli_session_id.as_ref() == Some(&canonical.source.cli));
         if let Some(copy) = current {
-            if owned(copy)
-                && payload::missing_links(&copy.payload, &canonical_payload)
-                && blocked_reason(input, index, &tombstone_names).is_none()
-            {
-                refreshed = true;
-                plan.refreshes.push(Refresh {
-                    owned: true,
-                    target,
-                    cli: canonical.cli.clone(),
-                    transcript: canonical.transcript.clone(),
-                    payload: payload::rebase(&copy.payload, &canonical_payload),
-                    expected_sha256: copy.sha256.clone(),
-                });
-                continue;
-            }
-            plan.counts.already_registered += 1;
+            refreshed |= plan_current(input, index, copy, target, &canonical, plan, skips);
             continue;
         }
         if let Some(reason) = blocked_reason(input, index, &tombstone_names) {
@@ -228,18 +236,18 @@ fn plan_desktop_session(
         match held {
             None => plan.additions.push(Addition {
                 target,
-                cli: canonical.cli.clone(),
-                transcript: canonical.transcript.clone(),
-                payload: canonical_payload.clone(),
+                cli: canonical.source.cli.clone(),
+                transcript: canonical.source.transcript.clone(),
+                payload: canonical.payload.clone(),
             }),
-            Some(copy) if owned(copy) || continues(canonical.copy, copy) => {
+            Some(copy) if owned(copy) || continues(canonical.source.copy, copy) => {
                 refreshed = true;
                 plan.refreshes.push(Refresh {
                     owned: owned(copy),
                     target,
-                    cli: canonical.cli.clone(),
-                    transcript: canonical.transcript.clone(),
-                    payload: payload::rebase(&copy.payload, &canonical_payload),
+                    cli: canonical.source.cli.clone(),
+                    transcript: canonical.source.transcript.clone(),
+                    payload: payload::rebase(&copy.payload, &canonical.payload),
                     expected_sha256: copy.sha256.clone(),
                 });
             }
@@ -249,6 +257,82 @@ fn plan_desktop_session(
     if refreshed {
         plan.counts.refresh_sessions += 1;
     }
+}
+
+/// The canonical copy with what every partition should get from it.
+struct Canonical<'s, 'a> {
+    source: &'s Source<'a>,
+    /// The canonical payload with the newest link fields and the latest activity.
+    payload: Map<String, Value>,
+    /// The conversation's latest activity, see [`latest_activity`].
+    activity: i64,
+}
+
+/// Plan a copy that already points at the canonical transcript, and return
+/// whether it is refreshed.
+///
+/// A copy this tool owns that lacks a link field is refreshed. Otherwise a
+/// listed, local copy with older activity gets an activity update, whoever
+/// wrote it.
+fn plan_current(
+    input: &PlanInput<'_>,
+    index: usize,
+    copy: &WrapperCopy,
+    target: Target,
+    canonical: &Canonical<'_, '_>,
+    plan: &mut Plan,
+    skips: &mut Skips,
+) -> bool {
+    let owned = input.ledger.owns(&target.ledger_key, &copy.sha256);
+    let blocked = blocked_reason(input, index, &target.tombstone_names);
+    let source = canonical.source;
+    if owned && payload::missing_links(&copy.payload, &canonical.payload) && blocked.is_none() {
+        plan.refreshes.push(Refresh {
+            owned: true,
+            target,
+            cli: source.cli.clone(),
+            transcript: source.transcript.clone(),
+            payload: payload::rebase(&copy.payload, &canonical.payload),
+            expected_sha256: copy.sha256.clone(),
+        });
+        return true;
+    }
+    let behind = !copy.fields.archived_or_hidden
+        && !copy.fields.remote
+        && copy
+            .fields
+            .last_activity_at
+            .is_none_or(|own| own < canonical.activity);
+    if !behind {
+        plan.counts.already_registered += 1;
+        return false;
+    }
+    if let Some(reason) = blocked {
+        skips.add(reason);
+        return false;
+    }
+    let mut updated = copy.payload.clone();
+    payload::set_activity(&mut updated, canonical.activity);
+    plan.activity_updates.push(ActivityUpdate {
+        owned,
+        target,
+        cli: source.cli.clone(),
+        transcript: source.transcript.clone(),
+        payload: updated,
+        expected_sha256: copy.sha256.clone(),
+    });
+    false
+}
+
+/// The conversation's latest activity: the canonical copy's `lastActivityAt`
+/// or the transcript's last record, whichever is later.
+fn latest_activity(input: &PlanInput<'_>, canonical: &Source<'_>) -> i64 {
+    let recorded = input.transcripts.last_record_ms.get(&canonical.cli).copied();
+    [canonical.copy.fields.last_activity_at, recorded]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or_default()
 }
 
 /// Every transcript of the conversation is gone: remove the copies this tool owns.

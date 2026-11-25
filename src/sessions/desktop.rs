@@ -118,6 +118,15 @@ impl DesktopScan {
             .flat_map(|copy| copy.fields.transcript_ids.iter().cloned())
             .collect()
     }
+
+    /// The transcript each listed, local entry currently points at.
+    pub(super) fn current_transcript_ids(&self) -> BTreeSet<SessionId> {
+        self.copies
+            .iter()
+            .filter(|copy| !copy.fields.archived_or_hidden && !copy.fields.remote)
+            .filter_map(|copy| copy.fields.cli_session_id.clone())
+            .collect()
+    }
 }
 
 /// Find the partitions and read every wrapper and marker in them.

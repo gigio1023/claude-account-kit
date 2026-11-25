@@ -33,6 +33,8 @@ const BIN: &str = env!("CARGO_BIN_EXE_claude-account-kit");
 const CREATED_MS: u64 = 1_790_000_000_000;
 const MINUTE_MS: u64 = 60_000;
 const HOUR_MS: u64 = 3_600_000;
+/// `CREATED_MS` and five seconds later, as transcript records write them.
+const CREATED_RECORD_TIMES: [&str; 2] = ["2026-09-21T14:13:20.000Z", "2026-09-21T14:13:25.000Z"];
 
 /// Canonical lowercase UUID text, distinct for each `n`.
 fn uuid(n: u32) -> String {
@@ -148,11 +150,11 @@ impl Sandbox {
         let lines = [
             json!({"type": "user", "sessionId": cli, "cwd": cwd,
                    "entrypoint": entrypoint,
-                   "timestamp": "2026-10-01T00:00:00.000Z",
+                   "timestamp": CREATED_RECORD_TIMES[0],
                    "message": {"role": "user", "content": "hi"}}),
             json!({"type": "assistant", "sessionId": cli, "cwd": cwd,
                    "entrypoint": entrypoint,
-                   "timestamp": "2026-10-01T00:00:05.000Z",
+                   "timestamp": CREATED_RECORD_TIMES[1],
                    "message": {"role": "assistant", "content": [{"type": "text", "text": "hello"}]}}),
         ];
         let mut body = String::new();
@@ -163,6 +165,19 @@ impl Sandbox {
         let path = self.projects.join(project).join(format!("{cli}.jsonl"));
         write_file(&path, body.as_bytes());
         path
+    }
+
+    /// Appends a message record stamped `timestamp` to transcript `path`, as
+    /// Claude Code does when the conversation continues.
+    fn append_message(&self, path: &Path, cli: &str, timestamp: &str) {
+        let cwd = self.cwd.to_str().expect("utf-8 cwd");
+        let mut body = read_bytes(path);
+        let record = json!({"type": "user", "sessionId": cli, "cwd": cwd,
+                            "timestamp": timestamp,
+                            "message": {"role": "user", "content": "again"}});
+        body.extend_from_slice(record.to_string().as_bytes());
+        body.push(b'\n');
+        write_file(path, &body);
     }
 
     /// Path of `file` relative to the Desktop root, as snapshots key it.
@@ -433,10 +448,12 @@ fn adds_each_conversation_to_every_partition() {
 }
 
 /// Contract 2: wrappers Desktop wrote stay byte-identical across runs, even an
-/// entry whose transcript is gone. The one exception is an entry the newest
-/// copy has moved on from: it follows the move to the new transcript and keeps
-/// its own title and other fields, because Desktop rewrites every entry when
-/// an app opens or quits and leaves the entry behind otherwise.
+/// entry whose transcript is gone. There are two exceptions, and in both the
+/// entry keeps its own title and other fields, because Desktop rewrites every
+/// entry when an app opens or quits and leaves it behind otherwise: an entry
+/// the newest copy has moved on from follows the move to the new transcript,
+/// and an entry with older activity takes the latest `lastActivityAt`
+/// (contract 11).
 #[test]
 fn never_modifies_a_wrapper_it_did_not_write() {
     let sb = Sandbox::new();
@@ -452,14 +469,15 @@ fn never_modifies_a_wrapper_it_did_not_write() {
     let mut b_entry = sb.wrapper_json(&w, &x1, &[], CREATED_MS);
     b_entry["title"] = json!("Renamed in account B");
     b_entry["model"] = json!("fixture-model");
-    let b_original = serde_json::to_vec(&b_entry).expect("serialize");
-    write_file(&wrapper_path(&b1, &w), &b_original);
+    write_file(&wrapper_path(&b1, &w), &serde_json::to_vec(&b_entry).expect("serialize"));
     // Account C's Desktop lists V, whose transcript no longer exists.
     let c_original = write_wrapper(&c1, &sb.wrapper_json(&v, &xv, &[], CREATED_MS));
 
     sb.sync(&[]);
 
-    assert_eq!(read_bytes(&wrapper_path(&b1, &w)), b_original, "B's own entry for W");
+    let mut b_raised = b_entry.clone();
+    b_raised["lastActivityAt"] = json!(CREATED_MS + MINUTE_MS);
+    assert_eq!(read_json(&wrapper_path(&b1, &w)), b_raised, "B's own entry for W changes only its activity time");
     assert_eq!(read_bytes(&wrapper_path(&c1, &v)), c_original, "C's own entry for V");
 
     // Desktop moves W in A to a new transcript, so B's own entry is now stale.
@@ -607,6 +625,73 @@ fn refresh_moves_every_copy_and_keeps_its_changes() {
     assert!(changed.is_empty(), "contract 7: run after a refresh changed {changed:?}");
 }
 
+/// Contract 11: every copy that already points at the conversation's current
+/// transcript shows the conversation's latest activity, so a conversation
+/// continued in one account sorts as recent in every account. Only
+/// `lastActivityAt` changes, it never goes down, archived copies stay as they
+/// are, and a Desktop copy does not become the tool's to remove.
+#[test]
+fn copies_on_the_current_transcript_take_the_latest_activity_time() {
+    let sb = Sandbox::new();
+    let a1 = sb.partition(0xA, 0xA1);
+    let b1 = sb.partition(0xB, 0xB1);
+    let c1 = sb.partition(0xC, 0xC1);
+    let d1 = sb.partition(0xD, 0xD1);
+    let (w, x1) = (uuid(0x101), uuid(0x201));
+    let x1_path = sb.write_transcript(&x1);
+    // Keeps the projects root non-empty once x1 is gone (see the removal test).
+    sb.write_transcript(&uuid(0x301));
+    write_wrapper(&a1, &sb.wrapper_json(&w, &x1, &[], CREATED_MS + MINUTE_MS));
+    // Account B's Desktop lists W with its own title and older activity.
+    let mut b_entry = sb.wrapper_json(&w, &x1, &[], CREATED_MS);
+    b_entry["title"] = json!("Renamed in account B");
+    write_wrapper(&b1, &b_entry);
+    // Account D archived W.
+    let mut d_entry = sb.wrapper_json(&w, &x1, &[], CREATED_MS);
+    d_entry["isArchived"] = json!(true);
+    let d_original = write_wrapper(&d1, &d_entry);
+
+    sb.sync(&[]);
+    assert_eq!(read_json(&wrapper_path(&c1, &w))["lastActivityAt"], json!(CREATED_MS + MINUTE_MS), "precondition: copy of W");
+
+    // The conversation continues in account A an hour later.
+    write_wrapper(&a1, &sb.wrapper_json(&w, &x1, &[], CREATED_MS + HOUR_MS));
+    sb.sync(&[]);
+
+    for partition in [&a1, &b1, &c1] {
+        let copy = read_json(&wrapper_path(partition, &w));
+        assert_eq!(copy["lastActivityAt"], json!(CREATED_MS + HOUR_MS), "{} shows the latest activity", sb.desktop_relative(partition));
+    }
+    let mut b_expected = b_entry.clone();
+    b_expected["lastActivityAt"] = json!(CREATED_MS + HOUR_MS);
+    assert_eq!(read_json(&wrapper_path(&b1, &w)), b_expected, "B's entry changes only its activity time");
+    assert_eq!(read_bytes(&wrapper_path(&d1, &w)), d_original, "archived copy untouched");
+
+    // A message reaches the transcript before any Desktop entry records it.
+    sb.append_message(&x1_path, &x1, "2026-09-21T16:13:20.000Z");
+    let continued = CREATED_MS + 2 * HOUR_MS;
+    sb.sync(&[]);
+    for partition in [&a1, &b1, &c1] {
+        assert_eq!(read_json(&wrapper_path(partition, &w))["lastActivityAt"], json!(continued), "{} follows the transcript", sb.desktop_relative(partition));
+    }
+
+    // An app that was open writes its older value back; activity never goes
+    // down, and the next sync raises it again.
+    write_wrapper(&b1, &b_entry);
+    sb.sync(&[]);
+    assert_eq!(read_json(&wrapper_path(&b1, &w))["lastActivityAt"], json!(continued), "B raised again");
+    let settled = tree(&sb.desktop);
+    sb.sync(&[]);
+    assert!(changed_paths(&settled, &tree(&sb.desktop)).is_empty(), "contract 7: nothing left to change");
+
+    // Once the transcript is gone, only the tool's own copy is removed.
+    fs::remove_file(&x1_path).expect("remove transcript");
+    sb.sync(&[]);
+    assert!(!wrapper_path(&c1, &w).exists(), "the tool's copy is removed");
+    assert!(wrapper_path(&b1, &w).exists(), "B's entry stays Desktop's");
+    assert!(wrapper_path(&a1, &w).exists(), "A's entry stays Desktop's");
+}
+
 /// Contract 10: a transcript Desktop started is listed only under Desktop's
 /// own entry. Desktop writes the transcript before its entry points at it, so
 /// a run in between lists nothing, and a second entry named after the
@@ -663,8 +748,10 @@ fn removal_deletes_only_unchanged_tool_copies() {
     // describes: W's transcripts are gone while the projects root is readable.
     sb.write_transcript(&uuid(0x301));
     let a_original = write_wrapper(&a1, &sb.wrapper_json(&w, &x2, &[&x1], CREATED_MS + HOUR_MS));
-    // Account E's Desktop lists W on its own; that file is Desktop's, not a copy.
-    let e_original = write_wrapper(&e1, &sb.wrapper_json(&w, &x2, &[&x1], CREATED_MS + MINUTE_MS));
+    // Account E's Desktop lists W on its own; that file is Desktop's, not a
+    // copy, even after a sync raises its activity time (contract 11).
+    let mut e_entry = sb.wrapper_json(&w, &x2, &[&x1], CREATED_MS + MINUTE_MS);
+    write_wrapper(&e1, &e_entry);
     sb.sync(&[]);
     for partition in [&b1, &c1] {
         assert!(wrapper_path(partition, &w).exists(), "precondition: copy of W");
@@ -681,7 +768,8 @@ fn removal_deletes_only_unchanged_tool_copies() {
     assert!(!wrapper_path(&c1, &w).exists(), "contract 6: unchanged copy is removed");
     assert_eq!(read_bytes(&wrapper_path(&b1, &w)), b_edited, "contract 6: edited copy stays");
     assert_eq!(read_bytes(&wrapper_path(&a1, &w)), a_original, "contract 6: Desktop's original stays");
-    assert_eq!(read_bytes(&wrapper_path(&e1, &w)), e_original, "contract 2: Desktop's own entry stays");
+    e_entry["lastActivityAt"] = json!(CREATED_MS + HOUR_MS);
+    assert_eq!(read_json(&wrapper_path(&e1, &w)), e_entry, "contract 2: Desktop's own entry stays");
 }
 
 /// Contract 7: a run right after another, with nothing changed in between,

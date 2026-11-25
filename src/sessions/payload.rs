@@ -51,7 +51,7 @@ const POINTER_FIELDS: [&str; 4] = ["cliSessionId", "cwd", "originCwd", "lastActi
 /// The copy keeps its per-partition state, such as its title, permissions, and
 /// archive flag. It takes the pointer and history fields from `canonical` and drops
 /// history fields `canonical` lacks, since a stale rewind edge or transcript
-/// cut would resume the wrong branch.
+/// cut would resume the wrong branch. Its activity time only goes up.
 pub(super) fn rebase(
     copy: &Map<String, Value>,
     canonical: &Map<String, Value>,
@@ -72,7 +72,25 @@ pub(super) fn rebase(
             payload.insert(key.to_string(), value.clone());
         }
     }
+    if let Some(own) = activity(copy)
+        && activity(&payload).is_none_or(|taken| taken < own)
+    {
+        payload.insert(ACTIVITY_FIELD.to_string(), json!(own));
+    }
     payload
+}
+
+/// The field Desktop sorts its session list by, in Unix milliseconds.
+const ACTIVITY_FIELD: &str = "lastActivityAt";
+
+/// A copy's activity time, when it holds a valid one.
+fn activity(payload: &Map<String, Value>) -> Option<i64> {
+    timestamp::milliseconds(payload.get(ACTIVITY_FIELD))
+}
+
+/// Set the activity time of a payload, leaving every other field as it is.
+pub(super) fn set_activity(payload: &mut Map<String, Value>, milliseconds: i64) {
+    payload.insert(ACTIVITY_FIELD.to_string(), json!(milliseconds));
 }
 
 /// Whether `copy` lacks a link field `canonical` carries, or holds another value.

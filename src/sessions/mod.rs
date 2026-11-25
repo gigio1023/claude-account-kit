@@ -50,6 +50,8 @@ pub(crate) struct SessionsSummary {
     pub(crate) last_run_at: Option<String>,
     pub(crate) added: u64,
     pub(crate) refreshed: u64,
+    /// Copies whose `lastActivityAt` alone was raised.
+    pub(crate) activity_updated: u64,
     pub(crate) removed: u64,
     /// The last sync changed entries that Desktop shows only after an
     /// account switch or a restart.
@@ -75,6 +77,7 @@ pub(crate) fn summary(ctx: &AppContext) -> Result<SessionsSummary> {
         last_run_at: last_run.as_ref().map(|report| report.checked_at.clone()),
         added: applied.add,
         refreshed: applied.refresh,
+        activity_updated: applied.activity,
         removed: applied.remove,
         refresh_needed: last_run.is_some_and(|report| report.refresh_needed),
     })
@@ -212,6 +215,7 @@ fn print_status(ctx: &AppContext, json: bool) -> Result<()> {
     report::print_changes(report::Changes {
         add: summary.added,
         refresh: summary.refreshed,
+        activity: summary.activity_updated,
         remove: summary.removed,
     });
     if let Some(report) = &last_run {

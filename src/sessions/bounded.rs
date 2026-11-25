@@ -123,6 +123,27 @@ pub(super) fn read_windows(path: &Path, budget: &mut ReadBudget) -> io::Result<V
     Ok(windows)
 }
 
+/// Read only a transcript's tail window, charging it to the budget.
+///
+/// Like the tail of [`read_windows`], it starts at the first full line, so
+/// a fragment of a message value is never read as a record.
+pub(super) fn read_tail(path: &Path, budget: &mut ReadBudget) -> io::Result<Vec<u8>> {
+    let (mut file, metadata) = open_regular(path, u64::MAX)?;
+    let size = metadata.len();
+    let start = size.saturating_sub(TAIL_BYTES);
+    budget.claim(size - start)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::new();
+    file.take(size - start).read_to_end(&mut tail)?;
+    if start > 0 {
+        tail = match tail.iter().position(|byte| *byte == b'\n') {
+            Some(newline) => tail.split_off(newline + 1),
+            None => Vec::new(),
+        };
+    }
+    Ok(tail)
+}
+
 fn open_regular(path: &Path, limit: u64) -> io::Result<(File, Metadata)> {
     let before = fs::symlink_metadata(path)?;
     if !before.file_type().is_file() {

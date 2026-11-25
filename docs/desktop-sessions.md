@@ -16,11 +16,12 @@ Each file points at a Claude Code transcript through `cliSessionId`. A sync adds
 - **Skipped.** Archived and hidden sessions, SSH, WSL, and cloud sessions, subagent transcripts, and sessions whose working folder no longer exists. Desktop cannot open a session without its folder, so these come back on their own once the folder does.
 - **Deletions.** A session you deleted in one account is never added back to that account.
 - **Rewind, fork, and continued sessions.** Desktop moves a session to a new transcript in the account where you rewound or continued it and leaves the other accounts on the old one. A sync points every copy at the newest transcript when the newest copy lists the copy's transcript in `priorCliSessionIds`. A copy Desktop wrote keeps its own title, permissions, and archive flag. A copy that moved to a transcript the newest copy does not list was continued separately and is left alone.
+- **Activity time.** Desktop sorts its list by each entry's `lastActivityAt`, which only the app that ran the conversation updates. A sync raises that field, and nothing else, in every listed entry that already points at the conversation's current transcript, to the later of the newest entry's value and the transcript's last timed record. It never lowers it, and archived or hidden entries keep theirs. The file's modification time is not used: Claude Code appends untimed records such as `last-prompt` and `cost-state` when a conversation is only opened.
 - **Removed transcripts.** When every transcript of a session is gone, the copies the sync wrote are deleted. The entry Desktop wrote stays, and Desktop shows it as unavailable. When `~/.claude/projects` holds no transcript at all, nothing is deleted, because an empty or unmounted folder looks the same as every session being gone.
 
 ## What it never changes
 
-The sync deletes a Desktop file only when it can prove it wrote that file, or when the file is a duplicate entry described above. Every write to a file the sync owns is recorded with the file's SHA-256 in `ledger.jsonl` in the tool's state directory. An entry Desktop wrote, or one Desktop changed after the sync wrote it, is changed only to follow its own conversation to a newer transcript, and it stays Desktop's: it is not recorded as the sync's and is never removed as an orphan. Other such entries are left as they are; `sessions status` counts these as left alone. Desktop rewrites an entry from memory when an app quits, so an app that was open during a move can put its entry back on the old transcript; the next sync moves it forward again. New files are published with a hard link, which fails instead of replacing a file Desktop created at the same moment.
+The sync deletes a Desktop file only when it can prove it wrote that file, or when the file is a duplicate entry described above. Every write to a file the sync owns is recorded with the file's SHA-256 in `ledger.jsonl` in the tool's state directory. An entry Desktop wrote, or one Desktop changed after the sync wrote it, is changed only to follow its own conversation to a newer transcript or to raise its activity time, and it stays Desktop's: it is not recorded as the sync's and is never removed as an orphan. Other such entries are left as they are; `sessions status` counts these as left alone. Desktop rewrites an entry from memory when an app quits, so an app that was open during a sync can put its entry back on the old transcript or the old activity time; the next sync moves it forward again. New files are published with a hard link, which fails instead of replacing a file Desktop created at the same moment.
 
 The sync adds entries only to account folders Desktop has already created. Desktop creates one the first time an account is active.
 
@@ -61,7 +62,7 @@ Desktop reads an account's list when it opens that account, so new entries show 
 
 - macOS only. The background job uses launchd, and the Desktop paths are the macOS ones.
 - The sync reads the session file format of Claude Desktop 2.37. A Desktop update that changes it needs a recheck with `sessions sync --dry-run`.
-- Titles and sort order are not kept in step across accounts; each account keeps what Desktop shows there.
+- Titles are not kept in step across accounts; each account keeps what Desktop shows there. Sort order follows the shared activity time once Desktop rereads the list.
 - A brand-new account gets entries after Desktop has opened it once, and they appear after the next switch.
 
 ## Moving from claude-local-sessions
