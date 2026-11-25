@@ -47,6 +47,8 @@ pub(super) struct TranscriptInventory {
     /// The latest record timestamp of each transcript a Desktop entry
     /// currently points at, in Unix milliseconds. See [`read_last_records`].
     pub(super) last_record_ms: BTreeMap<SessionId, i64>,
+    /// The `custom-title` values in the same tail windows, oldest first.
+    pub(super) tail_titles: BTreeMap<SessionId, Vec<String>>,
 }
 
 /// What a transcript without a Desktop entry says about itself.
@@ -90,6 +92,7 @@ pub(super) fn inventory(root: &Path, skips: &mut Skips) -> TranscriptInventory {
         seen: BTreeSet::new(),
         complete: bounded::is_real_dir(root),
         last_record_ms: BTreeMap::new(),
+        tail_titles: BTreeMap::new(),
     };
     if !inventory.complete {
         return inventory;
@@ -181,7 +184,8 @@ pub(super) fn read_cli_only(
     result
 }
 
-/// Read when each of `ids` last had a record written, from its tail window.
+/// Read when each of `ids` last had a record written, and the titles its
+/// tail window names, from its tail window.
 ///
 /// The time comes from the records' own `timestamp` fields, not from the
 /// file's modification time. Claude Code appends untimed bookkeeping records
@@ -190,6 +194,11 @@ pub(super) fn read_cli_only(
 /// transcripts were modified more than a day after their last timed record.
 /// A time after `now_ms` is ignored, so a wrong clock cannot pin a
 /// conversation to the top of every list.
+///
+/// The titles are the `customTitle` of each `custom-title` record. Claude Code
+/// appends one with every turn, and Desktop appends the title of the app
+/// running the turn, so the tail shows which titles were in use lately, not
+/// which was set last.
 pub(super) fn read_last_records(
     inventory: &mut TranscriptInventory,
     ids: &BTreeSet<SessionId>,
@@ -205,15 +214,27 @@ pub(super) fn read_last_records(
             skips.add(Skip::TranscriptUnreadable);
             continue;
         };
-        let latest = tail
-            .split(|byte| *byte == b'\n')
-            .filter_map(|line| {
-                timestamp::milliseconds(json_scan::scalar_fields(line, &["timestamp"]).get("timestamp"))
-            })
-            .filter(|time| *time <= now_ms)
-            .max();
+        let mut latest: Option<i64> = None;
+        let mut titles: Vec<String> = Vec::new();
+        for line in tail.split(|byte| *byte == b'\n') {
+            let record = json_scan::scalar_fields(line, &["timestamp", "type", "customTitle"]);
+            if let Some(time) = timestamp::milliseconds(record.get("timestamp"))
+                && time <= now_ms
+            {
+                latest = Some(latest.map_or(time, |best| best.max(time)));
+            }
+            if record.get("type").and_then(Value::as_str) == Some("custom-title")
+                && let Some(title) =
+                    string(&record, "customTitle").filter(|title| !title.trim().is_empty())
+            {
+                titles.push(title);
+            }
+        }
         if let Some(latest) = latest {
             inventory.last_record_ms.insert(id.clone(), latest);
+        }
+        if !titles.is_empty() {
+            inventory.tail_titles.insert(id.clone(), titles);
         }
     }
 }

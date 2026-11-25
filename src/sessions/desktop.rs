@@ -49,11 +49,27 @@ pub(super) struct WrapperFields {
     /// Every transcript id the wrapper names, current or earlier.
     pub(super) transcript_ids: BTreeSet<SessionId>,
     pub(super) last_activity_at: Option<i64>,
-    pub(super) archived_or_hidden: bool,
+    pub(super) archived: bool,
+    pub(super) hidden: bool,
+    /// When Desktop last set the archive flag, in Unix milliseconds. Current
+    /// Desktop builds write `archiveSetAtMs`; entries archived by earlier
+    /// builds have none.
+    pub(super) archive_set_at: Option<i64>,
     pub(super) remote: bool,
+    pub(super) title: Option<String>,
+    /// Who set the title: `user` for a rename, `tool` for an agent, `auto` for
+    /// a generated one. Desktop never lets an `auto` title replace the other two.
+    pub(super) title_source: Option<String>,
+    /// Titles this copy had before, which Desktop appends to on each rename.
+    pub(super) previous_titles: Vec<String>,
 }
 
 impl WrapperFields {
+    /// Whether Desktop leaves the copy out of its list.
+    pub(super) const fn archived_or_hidden(&self) -> bool {
+        self.archived || self.hidden
+    }
+
     fn read(payload: &Map<String, Value>) -> Self {
         let cli_session_id = SessionId::from_value(payload.get("cliSessionId"));
         let prior_cli_session_ids: BTreeSet<SessionId> = payload
@@ -73,13 +89,25 @@ impl WrapperFields {
             transcript_ids.extend(SessionId::from_value(payload.get(key)));
         }
         let flag = |key: &str| payload.get(key) == Some(&Value::Bool(true));
+        let text = |key: &str| payload.get(key).and_then(Value::as_str).map(str::to_string);
         Self {
             cli_session_id,
             prior_cli_session_ids,
             transcript_ids,
             last_activity_at: timestamp::milliseconds(payload.get("lastActivityAt")),
-            archived_or_hidden: flag("isArchived") || flag("isHidden"),
+            archived: flag("isArchived"),
+            hidden: flag("isHidden"),
+            archive_set_at: timestamp::milliseconds(payload.get("archiveSetAtMs")),
             remote: transcripts::is_remote(payload),
+            title: text("title").filter(|title| !title.trim().is_empty()),
+            title_source: text("titleSource"),
+            previous_titles: payload
+                .get("previousTitles")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect(),
         }
     }
 }
@@ -123,7 +151,7 @@ impl DesktopScan {
     pub(super) fn current_transcript_ids(&self) -> BTreeSet<SessionId> {
         self.copies
             .iter()
-            .filter(|copy| !copy.fields.archived_or_hidden && !copy.fields.remote)
+            .filter(|copy| !copy.fields.archived_or_hidden() && !copy.fields.remote)
             .filter_map(|copy| copy.fields.cli_session_id.clone())
             .collect()
     }

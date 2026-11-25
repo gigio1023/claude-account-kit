@@ -11,7 +11,7 @@ use super::fingerprint::{self, StoredFingerprint};
 use super::ledger::{self, Ledger};
 use super::lock::RunLock;
 use super::paths::SessionPaths;
-use super::plan::{self, Plan, PlanInput};
+use super::plan::{self, FieldChanges, Plan, PlanInput};
 use super::publish::{Outcome, Publisher};
 use super::report::{Changes, RunReport, RunStatus};
 use super::skips::Skips;
@@ -158,11 +158,11 @@ fn discover(paths: &SessionPaths, skips: &mut Skips) -> Result<Discovery> {
 }
 
 /// Which kind of planned change an outcome belongs to.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum ChangeKind {
     Add,
-    Refresh,
-    Activity,
+    Refresh(FieldChanges),
+    Update(FieldChanges),
     Remove,
 }
 
@@ -180,18 +180,19 @@ fn publish(paths: &SessionPaths, ledger: &mut Ledger, plan: &Plan) -> Vec<(Chang
             .iter()
             .map(|removal| (ChangeKind::Remove, publisher.remove(removal))),
     );
-    outcomes.extend(
-        plan.refreshes
-            .iter()
-            .map(|refresh| (ChangeKind::Refresh, publisher.refresh(refresh))),
-    );
-    // An activity update writes the same way as a refresh: the file must
-    // still hold the bytes the plan read, and only a copy the tool owns is
+    outcomes.extend(plan.refreshes.iter().map(|refresh| {
+        (
+            ChangeKind::Refresh(refresh.fields),
+            publisher.refresh(refresh),
+        )
+    }));
+    // A field update writes the same way as a refresh: the file must still
+    // hold the bytes the plan read, and only a copy the tool owns is
     // recorded in the ledger.
     outcomes.extend(
-        plan.activity_updates
+        plan.updates
             .iter()
-            .map(|update| (ChangeKind::Activity, publisher.refresh(update))),
+            .map(|update| (ChangeKind::Update(update.fields), publisher.refresh(update))),
     );
     outcomes.extend(
         plan.additions
@@ -242,7 +243,7 @@ fn summarize(
     let mut applied = Changes::default();
     for (kind, outcome) in outcomes {
         let name = match kind {
-            ChangeKind::Activity => format!("activity_{}", outcome.as_str()),
+            ChangeKind::Update(_) => format!("update_{}", outcome.as_str()),
             _ => outcome.as_str().to_string(),
         };
         *publication.entry(name).or_insert(0) += 1;
@@ -251,10 +252,22 @@ fn summarize(
         }
         match kind {
             ChangeKind::Add => applied.add += 1,
-            ChangeKind::Refresh => applied.refresh += 1,
-            ChangeKind::Activity => applied.activity += 1,
+            ChangeKind::Refresh(fields) => {
+                applied.refresh += 1;
+                count_fields(&mut applied, *fields);
+            }
+            ChangeKind::Update(fields) => count_fields(&mut applied, *fields),
             ChangeKind::Remove => applied.remove += 1,
         }
+    }
+    let mut planned = Changes {
+        add: plan.additions.len() as u64,
+        refresh: plan.refreshes.len() as u64,
+        remove: plan.removals.len() as u64,
+        ..Changes::default()
+    };
+    for write in plan.refreshes.iter().chain(&plan.updates) {
+        count_fields(&mut planned, write.fields);
     }
     let failed = outcomes.iter().any(|(_, outcome)| outcome.is_error());
     RunReport {
@@ -262,12 +275,7 @@ fn summarize(
         checked_at: timestamp::format_utc(now_epoch()),
         background: false,
         counts: plan.counts.clone(),
-        planned: Changes {
-            add: plan.additions.len() as u64,
-            refresh: plan.refreshes.len() as u64,
-            activity: plan.activity_updates.len() as u64,
-            remove: plan.removals.len() as u64,
-        },
+        planned,
         applied,
         skipped: skips.to_map(),
         publication,
@@ -275,4 +283,10 @@ fn summarize(
         refresh_needed: applied.total() > 0,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
+}
+
+fn count_fields(changes: &mut Changes, fields: FieldChanges) {
+    changes.activity += u64::from(fields.activity);
+    changes.title += u64::from(fields.title);
+    changes.restore += u64::from(fields.restore);
 }
